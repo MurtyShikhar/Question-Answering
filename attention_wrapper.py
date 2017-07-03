@@ -56,14 +56,17 @@ class AttentionMechanism(object):
 
 def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
   """Convert to tensor and possibly mask `memory`.
+
   Args:
     memory: `Tensor`, shaped `[batch_size, max_time, ...]`.
     memory_sequence_length: `int32` `Tensor`, shaped `[batch_size]`.
     check_inner_dims_defined: Python boolean.  If `True`, the `memory`
       argument's shape is checked to ensure all but the two outermost
       dimensions are fully defined.
+
   Returns:
     A (possibly masked), checked, new `memory`.
+
   Raises:
     ValueError: If `check_inner_dims_defined` is `True` and not
       `memory.shape[2:].is_fully_defined()`.
@@ -123,6 +126,7 @@ def _maybe_mask_score(score, memory_sequence_length, score_mask_value):
 
 class _BaseAttentionMechanism(AttentionMechanism):
   """A base AttentionMechanism class providing common functionality.
+
   Common functionality includes:
     1. Storing the query and memory layers.
     2. Preprocessing and storing the memory.
@@ -138,6 +142,7 @@ class _BaseAttentionMechanism(AttentionMechanism):
                score_mask_value=float("-inf"),
                name=None):
     """Construct base AttentionMechanism class.
+
     Args:
       query_layer: Callable.  Instance of `tf.layers.Layer`.  The layer's depth
         must match the depth of `memory_layer`.  If `query_layer` is not
@@ -218,12 +223,16 @@ class _BaseAttentionMechanism(AttentionMechanism):
 
   def initial_alignments(self, batch_size, dtype):
     """Creates the initial alignment values for the `AttentionWrapper` class.
+
     This is important for AttentionMechanisms that use the previous alignment
     to calculate the alignment at the next time step (e.g. monotonic attention).
+
     The default behavior is to return a tensor of all zeros.
+
     Args:
       batch_size: `int32` scalar, the batch_size.
       dtype: The `dtype`.
+
     Returns:
       A `dtype` tensor shaped `[batch_size, alignments_size]`
       (`alignments_size` is the values' `max_time`).
@@ -234,13 +243,17 @@ class _BaseAttentionMechanism(AttentionMechanism):
 
 class LuongAttention(_BaseAttentionMechanism):
   """Implements Luong-style (multiplicative) attention scoring.
+
   This attention has two forms.  The first is standard Luong attention,
   as described in:
+
   Minh-Thang Luong, Hieu Pham, Christopher D. Manning.
   "Effective Approaches to Attention-based Neural Machine Translation."
   EMNLP 2015.  https://arxiv.org/abs/1508.04025
+
   The second is the scaled form inspired partly by the normalized form of
   Bahdanau attention.
+
   To enable the second form, construct the object with parameter
   `scale=True`.
   """
@@ -254,6 +267,7 @@ class LuongAttention(_BaseAttentionMechanism):
                score_mask_value=float("-inf"),
                name="LuongAttention"):
     """Construct the AttentionMechanism mechanism.
+
     Args:
       num_units: The depth of the attention mechanism.
       memory: The memory to query; usually the output of an RNN encoder.  This
@@ -291,16 +305,19 @@ class LuongAttention(_BaseAttentionMechanism):
 
   def __call__(self, query, previous_alignments):
     """Score the query based on the keys and values.
+
     Args:
       query: Tensor of dtype matching `self.values` and shape
         `[batch_size, query_depth]`.
       previous_alignments: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]`
         (`alignments_size` is memory's `max_time`).
+
     Returns:
       alignments: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]` (`alignments_size` is memory's
         `max_time`).
+
     Raises:
       ValueError: If `key` and `query` depths do not match.
     """
@@ -343,17 +360,22 @@ class LuongAttention(_BaseAttentionMechanism):
 
 class BahdanauAttention(_BaseAttentionMechanism):
   """Implements Bhadanau-style (additive) attention.
+
   This attention has two forms.  The first is Bhandanau attention,
   as described in:
+
   Dzmitry Bahdanau, Kyunghyun Cho, Yoshua Bengio.
   "Neural Machine Translation by Jointly Learning to Align and Translate."
   ICLR 2015. https://arxiv.org/abs/1409.0473
+
   The second is the normalized form.  This form is inspired by the
   weight normalization article:
+
   Tim Salimans, Diederik P. Kingma.
   "Weight Normalization: A Simple Reparameterization to Accelerate
    Training of Deep Neural Networks."
   https://arxiv.org/abs/1602.07868
+
   To enable the second form, construct the object with parameter
   `normalize=True`.
   """
@@ -367,6 +389,7 @@ class BahdanauAttention(_BaseAttentionMechanism):
                score_mask_value=float("-inf"),
                name="BahdanauAttention"):
     """Construct the Attention mechanism.
+
     Args:
       num_units: The depth of the query mechanism.
       memory: The memory to query; usually the output of an RNN encoder.  This
@@ -389,7 +412,7 @@ class BahdanauAttention(_BaseAttentionMechanism):
     wrapped_probability_fn = lambda score, _: probability_fn(score)
     super(BahdanauAttention, self).__init__(
         query_layer=layers_core.Dense(
-            num_units, name="query_layer", use_bias=False),
+            num_units, name="query_layer", use_bias=True),
         memory_layer=layers_core.Dense(
             num_units, name="memory_layer", use_bias=False),
         memory=memory,
@@ -403,12 +426,14 @@ class BahdanauAttention(_BaseAttentionMechanism):
 
   def __call__(self, query, previous_alignments):
     """Score the query based on the keys and values.
+
     Args:
       query: Tensor of dtype matching `self.values` and shape
         `[batch_size, query_depth]`.
       previous_alignments: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]`
         (`alignments_size` is memory's `max_time`).
+
     Returns:
       alignments: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]` (`alignments_size` is memory's
@@ -423,22 +448,24 @@ class BahdanauAttention(_BaseAttentionMechanism):
       v = variable_scope.get_variable(
           "attention_v", [self._num_units], dtype=dtype)
 
+      # Bias added prior to the nonlinearity
+      b = variable_scope.get_variable(
+          "attention_b", [self._num_units], dtype=dtype,
+          initializer=init_ops.zeros_initializer())
+
       if self._normalize:
         # Scalar used in weight normalization
         g = variable_scope.get_variable(
             "attention_g", dtype=dtype,
             initializer=math.sqrt((1. / self._num_units)))
-        # Bias added prior to the nonlinearity
-        b = variable_scope.get_variable(
-            "attention_b", [self._num_units], dtype=dtype,
-            initializer=init_ops.zeros_initializer())
+
         # normed_v = g * v / ||v||
         normed_v = g * v * math_ops.rsqrt(
             math_ops.reduce_sum(math_ops.square(v)))
         score = math_ops.reduce_sum(
             normed_v * math_ops.tanh(keys + processed_query + b), [2])
       else:
-        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query),
+        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query+b),
                                     [2])
 
     alignments = self._probability_fn(score, previous_alignments)
@@ -450,7 +477,9 @@ class AttentionWrapperState(
                            ("cell_state", "attention", "time", "alignments",
                             "alignment_history"))):
   """`namedtuple` storing the state of a `AttentionWrapper`.
+
   Contains:
+
     - `cell_state`: The state of the wrapped `RNNCell` at the previous time
       step.
     - `attention`: The attention emitted at the previous time step.
@@ -462,14 +491,18 @@ class AttentionWrapperState(
 
   def clone(self, **kwargs):
     """Clone this object, overriding components provided by kwargs.
+
     Example:
+
     ```python
     initial_state = attention_wrapper.zero_state(dtype=..., batch_size=...)
     initial_state = initial_state.clone(cell_state=encoder_state)
     ```
+
     Args:
       **kwargs: Any properties of the state object to replace in the returned
         `AttentionWrapperState`.
+
     Returns:
       A new `AttentionWrapperState` whose properties are the same as
       this one, except any overriden properties as provided in `kwargs`.
@@ -479,7 +512,9 @@ class AttentionWrapperState(
 
 def hardmax(logits, name=None):
   """Returns batched one-hot vectors.
+
   The depth index containing the `1` is that of the maximum logit value.
+
   Args:
     logits: A batch tensor of logit values.
     name: Name to use when creating ops.
@@ -506,11 +541,12 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
                attention_layer_size=None,
                alignment_history=False,
                cell_input_fn=None,
-               cell_attention_fn=None,
+               attention_input_fn = None,
                output_attention=True,
                initial_cell_state=None,
                name=None):
     """Construct the `AttentionWrapper`.
+
     Args:
       cell: An instance of `RNNCell`.
       attention_mechanism: An instance of `AttentionMechanism`.
@@ -523,10 +559,6 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
         time major `TensorArray` on which you must call `stack()`).
       cell_input_fn: (optional) A `callable`.  The default is:
         `lambda inputs, attention: array_ops.concat([inputs, attention], -1)`.
-
-      cell_attention_fn: (optional) A `callable`.  The default is:
-        `lambda inputs, prev_state: prev_state`.
-
       output_attention: Python bool.  If `True` (default), the output at each
         time step is the attention value.  This is the behavior of Luong-style
         attention mechanisms.  If `False`, the output at each time step is
@@ -550,8 +582,6 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
       raise TypeError(
           "attention_mechanism must be a AttentionMechanism, saw type: %s"
           % type(attention_mechanism).__name__)
-
-    # TODO  
     if cell_input_fn is None:
       cell_input_fn = (
           lambda inputs, attention: array_ops.concat([inputs, attention], -1))
@@ -561,16 +591,17 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
             "cell_input_fn must be callable, saw type: %s"
             % type(cell_input_fn).__name__)
 
-
-    # TODO    
-    if cell_attention_fn is None:
-      cell_attention_fn = (
-          lambda inputs, prev_state: prev_state)
+########### ADDED TO ALLOW DIFFERENT INPUTS TO ATTENTION MECHANISM #############
+    if attention_input_fn is None:
+      attention_input_fn = (
+          lambda inputs, state: state)
     else:
-      if not callable(cell_attention_fn):
+      if not callable(attention_input_fn):
         raise TypeError(
-            "cell_attention_fn must be callable, saw type: %s"
-            % type(cell_attention_fn).__name__)
+            "attention_input_fn must be callable, saw type: %s"
+            % type(attention_input_fn).__name__)
+############## DONE ####################################################
+
 
 
 
@@ -585,7 +616,7 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
     self._cell = cell
     self._attention_mechanism = attention_mechanism
     self._cell_input_fn = cell_input_fn
-    self._cell_attention_fn = cell_attention_fn
+    self._attention_input_fn = attention_input_fn
 
     self._output_attention = output_attention
     self._alignment_history = alignment_history
@@ -663,196 +694,92 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
               batch_size, dtype),
           alignment_history=alignment_history)
 
+  def call(self, inputs, state):
+    """Perform a step of attention-wrapped RNN.
+
+    - Step 1: Mix the `inputs` and previous step's `attention` output via
+      `cell_input_fn`.
+    - Step 2: Call the wrapped `cell` with this input and its previous state.
+    - Step 3: Score the cell's output with `attention_mechanism`.
+    - Step 4: Calculate the alignments by passing the score through the
+      `normalizer`.
+    - Step 5: Calculate the context vector as the inner product between the
+      alignments and the attention_mechanism's values (memory).
+    - Step 6: Calculate the attention output by concatenating the cell output
+      and context through the attention layer (a linear layer with
+      `attention_size` outputs).
+
+    Args:
+      inputs: (Possibly nested tuple of) Tensor, the input at this time step.
+      state: An instance of `AttentionWrapperState` containing
+        tensors from the previous time step.
+
+    Returns:
+      A tuple `(attention_or_cell_output, next_state)`, where:
+
+      - `attention_or_cell_output` depending on `output_attention`.
+      - `next_state` is an instance of `DynamicAttentionWrapperState`
+         containing the state calculated at this time step.
+    """
+    # Step 1: Calculate the true inputs to the cell based on the
+    # previous attention value.
+
+    output_prev_step = state.cell_state.h # get hr_(i-1)
+
+    attention_input = self._attention_input_fn(inputs, output_prev_step) # get input to BahdanauAttention to get alpha_i
+    alignments = self._attention_mechanism(
+        attention_input, previous_alignments=state.alignments)
+
+    expanded_alignments = array_ops.expand_dims(alignments, 1)
+
+    attention_mechanism_values = self._attention_mechanism.values
+    context = math_ops.matmul(expanded_alignments, attention_mechanism_values)
+    context = array_ops.squeeze(context, [1])
 
 
-    def call(self, inputs, state):
-      """Perform a step of attention-wrapped RNN.
-      - Step 1: Mix the `inputs` and previous step's `attention` output via
-        `cell_input_fn`.
-      - Step 2: Call the wrapped `cell` with this input and its previous state.
-      - Step 3: Score the cell's output with `attention_mechanism`.
-      - Step 4: Calculate the alignments by passing the score through the
-        `normalizer`.
-      - Step 5: Calculate the context vector as the inner product between the
-        alignments and the attention_mechanism's values (memory).
-      - Step 6: Calculate the attention output by concatenating the cell output
-        and context through the attention layer (a linear layer with
-        `attention_size` outputs).
-      Args:
-        inputs: (Possibly nested tuple of) Tensor, the input at this time step.
-        state: An instance of `AttentionWrapperState` containing
-          tensors from the previous time step.
-      Returns:
-        A tuple `(attention_or_cell_output, next_state)`, where:
-        - `attention_or_cell_output` depending on `output_attention`.
-        - `next_state` is an instance of `DynamicAttentionWrapperState`
-           containing the state calculated at this time step.
-      """
-      # Step 1: Calculate the true inputs to the cell based on the
-      # previous attention value.
-      cell_inputs = self._cell_input_fn(inputs, state.attention)
-      cell_state = state.cell_state
-      cell_output, next_cell_state = self._cell(cell_inputs, cell_state)
+    cell_inputs = self._cell_input_fn(inputs, context) #concatenate input with alpha*memory and feed into root LSTM
+    cell_state = state.cell_state
+    cell_output, next_cell_state = self._cell(cell_inputs, cell_state)
 
-      cell_batch_size = (
-          cell_output.shape[0].value or array_ops.shape(cell_output)[0])
-      error_message = (
-          "When applying AttentionWrapper %s: " % self.name +
-          "Non-matching batch sizes between the memory "
-          "(encoder output) and the query (decoder output).  Are you using "
-          "the BeamSearchDecoder?  You may need to tile your memory input via "
-          "the tf.contrib.seq2seq.tile_batch function with argument "
-          "multiple=beam_width.")
-      with ops.control_dependencies(
-          [check_ops.assert_equal(cell_batch_size,
-                                  self._attention_mechanism.batch_size,
-                                  message=error_message)]):
-        cell_output = array_ops.identity(
-            cell_output, name="checked_cell_output")
-
-      alignments = self._attention_mechanism(
-          cell_output, previous_alignments=state.alignments)
-
-      # Reshape from [batch_size, memory_time] to [batch_size, 1, memory_time]
-      expanded_alignments = array_ops.expand_dims(alignments, 1)
-      # Context is the inner product of alignments and values along the
-      # memory time dimension.
-      # alignments shape is
-      #   [batch_size, 1, memory_time]
-      # attention_mechanism.values shape is
-      #   [batch_size, memory_time, attention_mechanism.num_units]
-      # the batched matmul is over memory_time, so the output shape is
-      #   [batch_size, 1, attention_mechanism.num_units].
-      # we then squeeze out the singleton dim.
-      attention_mechanism_values = self._attention_mechanism.values
-      context = math_ops.matmul(expanded_alignments, attention_mechanism_values)
-      context = array_ops.squeeze(context, [1])
-
-      if self._attention_layer is not None:
-        attention = self._attention_layer(
-            array_ops.concat([cell_output, context], 1))
-      else:
-        attention = context
-
-      if self._alignment_history:
-        alignment_history = state.alignment_history.write(
-            state.time, alignments)
-      else:
-        alignment_history = ()
-
-      next_state = AttentionWrapperState(
-          time=state.time + 1,
-          cell_state=next_cell_state,
-          attention=attention,
-          alignments=alignments,
-          alignment_history=alignment_history)
-
-      if self._output_attention:
-        return attention, next_state
-      else:
-        return cell_output, next_state
+    cell_batch_size = (
+        cell_output.shape[0].value or array_ops.shape(cell_output)[0])
+    error_message = (
+        "When applying AttentionWrapper %s: " % self.name +
+        "Non-matching batch sizes between the memory "
+        "(encoder output) and the query (decoder output).  Are you using "
+        "the BeamSearchDecoder?  You may need to tile your memory input via "
+        "the tf.contrib.seq2seq.tile_batch function with argument "
+        "multiple=beam_width.")
+    with ops.control_dependencies(
+        [check_ops.assert_equal(cell_batch_size,
+                                self._attention_mechanism.batch_size,
+                                message=error_message)]):
+      cell_output = array_ops.identity(
+          cell_output, name="checked_cell_output")
 
 
 
-      
+ 
+    if self._attention_layer is not None:
+      attention = self._attention_layer(
+          array_ops.concat([cell_output, context], 1))
+    else:
+      attention = context
 
-  # def call(self, inputs, state):
-  #   """Perform a step of attention-wrapped RNN.
-  #   - Step 1: Mix the `inputs` and previous step's `attention` output via
-  #     `cell_input_fn`.
-  #   - Step 2: Call the wrapped `cell` with this input and its previous state.
-  #   - Step 3: Score the cell's output with `attention_mechanism`.
-  #   - Step 4: Calculate the alignments by passing the score through the
-  #     `normalizer`.
-  #   - Step 5: Calculate the context vector as the inner product between the
-  #     alignments and the attention_mechanism's values (memory).
-  #   - Step 6: Calculate the attention output by concatenating the cell output
-  #     and context through the attention layer (a linear layer with
-  #     `attention_size` outputs).
-  #   Args:
-  #     inputs: (Possibly nested tuple of) Tensor, the input at this time step.
-  #     state: An instance of `AttentionWrapperState` containing
-  #       tensors from the previous time step.
-  #   Returns:
-  #     A tuple `(attention_or_cell_output, next_state)`, where:
-  #     - `attention_or_cell_output` depending on `output_attention`.
-  #     - `next_state` is an instance of `DynamicAttentionWrapperState`
-  #        containing the state calculated at this time step.
-  #   """
-  #   # Step 1: Calculate the true inputs to the cell based on the
-  #   # previous attention value.
+    if self._alignment_history:
+      alignment_history = state.alignment_history.write(
+          state.time, alignments)
+    else:
+      alignment_history = ()
 
-  #   print(inputs.get_shape())
-  #   cell_state = state.cell_state # hr_(i-1)
-  #   print(cell_state.get_shape())
+    next_state = AttentionWrapperState(
+        time=state.time + 1,
+        cell_state=next_cell_state,
+        attention=attention,
+        alignments=alignments,
+        alignment_history=alignment_history)
 
-  #   attention_input = self._cell_attention_fn(inputs, cell_state)
-  #   print(attention_input.get_shape())
-
-  #   alignments = self._attention_mechanism(
-  #       attention_input, previous_alignments=state.alignments)
-
-  #   cell_inputs = inputs
-
-  #   print(cell_inputs.get_shape())
-
-  #   print("alignments shape", alignments.get_shape())
-  #   cell_output, next_cell_state = self._cell(cell_inputs, cell_state)
-
-  #   print("cell output shape", cell_output.get_shape())
-
-  #   cell_batch_size = (
-  #       cell_output.shape[0].value or array_ops.shape(cell_output)[0])
-  #   error_message = (
-  #       "When applying AttentionWrapper %s: " % self.name +
-  #       "Non-matching batch sizes between the memory "
-  #       "(encoder output) and the query (decoder output).  Are you using "
-  #       "the BeamSearchDecoder?  You may need to tile your memory input via "
-  #       "the tf.contrib.seq2seq.tile_batch function with argument "
-  #       "multiple=beam_width.")
-  #   with ops.control_dependencies(
-  #       [check_ops.assert_equal(cell_batch_size,
-  #                               self._attention_mechanism.batch_size,
-  #                               message=error_message)]):
-  #     cell_output = array_ops.identity(
-  #         cell_output, name="checked_cell_output")
-
-   
-  #   # Reshape from [batch_size, memory_time] to [batch_size, 1, memory_time]
-  #   expanded_alignments = array_ops.expand_dims(alignments, 1)
-  #   # Context is the inner product of alignments and values along the
-  #   # memory time dimension.
-  #   # alignments shape is
-  #   #   [batch_size, 1, memory_time]
-  #   # attention_mechanism.values shape is
-  #   #   [batch_size, memory_time, attention_mechanism.num_units]
-  #   # the batched matmul is over memory_time, so the output shape is
-  #   #   [batch_size, 1, attention_mechanism.num_units].
-  #   # we then squeeze out the singleton dim.
-  #   attention_mechanism_values = self._attention_mechanism.values
-  #   context = math_ops.matmul(expanded_alignments, attention_mechanism_values)
-  #   context = array_ops.squeeze(context, [1])
-
-  #   if self._attention_layer is not None:
-  #     attention = self._attention_layer(
-  #         array_ops.concat([cell_output, context], 1))
-  #   else:
-  #     attention = context
-
-  #   if self._alignment_history:
-  #     alignment_history = state.alignment_history.write(
-  #         state.time, alignments)
-  #   else:
-  #     alignment_history = ()
-
-  #   next_state = AttentionWrapperState(
-  #       time=state.time + 1,
-  #       cell_state=next_cell_state,
-  #       attention=attention,
-  #       alignments=alignments,
-  #       alignment_history=alignment_history)
-
-  #   if self._output_attention:
-  #     return attention, next_state
-  #   else:
-  #     return cell_output, next_state
+    if self._output_attention:
+      return alignments, next_state
+    else:
+      return cell_output, next_state
