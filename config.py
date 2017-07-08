@@ -1,5 +1,5 @@
 class Config:
-	num_epochs = 100
+	num_epochs = 10
 	batch_size = 200
 	lr = 1e-2
 	train_embeddings=False

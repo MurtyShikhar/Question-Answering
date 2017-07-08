@@ -288,6 +288,7 @@ class QASystem(object):
         :return:
         """
 
+        
         losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=self.labels)
         self.loss = tf.reduce_mean(losses)
 
@@ -306,6 +307,7 @@ class QASystem(object):
         output_feed = [self.logits, self.loss]
 
         outputs, loss = session.run(output_feed, input_feed)
+        print(outputs.shape)
 
         return outputs[:, 0], outputs[:, 1], loss
 
@@ -337,7 +339,7 @@ class QASystem(object):
 
         return valid_cost
 
-    def evaluate_answer(self, session, dataset, sample=100, log=False):
+    def evaluate_answer(self, session, dataset, sample=10, log=False):
         """
         Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
         with the set of true answer labels
@@ -364,9 +366,10 @@ class QASystem(object):
 
         a_s, a_o = self.answer(session, dat)
 
-        answers = np.hstack([a_s, a_o])
+        answers = np.hstack([a_s.reshape([sample, -1]), a_o.reshape([sample,-1])])
         gold_answers = np.array([a for (_,_, a) in dat])
-    
+        print(answers)
+        print(gold_answers) 
         em = np.sum(answers == gold_answers)/float(len(answers))
 
         if log:
@@ -438,4 +441,4 @@ class QASystem(object):
 
         for epoch in xrange(self.config.num_epochs):
             session.run(self.init)
-            self.run_epoch(session, dev, dev, epoch)
+            self.run_epoch(session, train, dev, epoch)
