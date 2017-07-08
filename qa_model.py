@@ -135,7 +135,7 @@ class Decoder(object):
     def run_answer_ptr(self, output_attender, masks, labels):
         batch_size = tf.shape(output_attender)[0]
         masks_question, masks_passage = masks
-        labels = tf.expand_dims(labels, -1)
+        labels = tf.ones([batch_size, 2, 1])
    
 
         answer_ptr_cell_input_fn = lambda curr_input, curr_attention : curr_attention # independent of question
@@ -189,12 +189,13 @@ class QASystem(object):
         """
 
         # ==== set up placeholder tokens ========
-        self.setup_placeholders()
-
         self.embeddings = pretrained_embeddings
         self.encoder = encoder
         self.decoder = decoder
         self.config = config
+
+        self.setup_placeholders()
+
 
 
         # ==== assemble pieces ====
@@ -291,43 +292,26 @@ class QASystem(object):
         self.loss = tf.reduce_mean(losses)
 
 
-    def test(self, session, valid_x, valid_y):
+    def test(self, session, valid):
         """
         in here you should compute a cost for your validation set
         and tune your hyperparameters according to the validation set performance
         :return:
         """
-        input_feed = {}
 
-        # fill in this feed_dictionary like:
-        # input_feed['valid_x'] = valid_x
+        q, c, a = minibatches(valid, len(valid))
+        input_feed =  self.get_feed_dict(q, c, a)
 
-        output_feed = []
+        output_feed = [self.logits, self.loss]
 
-        outputs = session.run(output_feed, input_feed)
+        outputs, loss = session.run(output_feed, input_feed)
 
-        return outputs
+        return outputs[:, 0], outputs[:, 1], loss
 
-    def decode(self, session, test_x):
-        """
-        Returns the probability distribution over different positions in the paragraph
-        so that other methods like self.answer() will be able to work properly
-        :return:
-        """
-        input_feed = {}
 
-        # fill in this feed_dictionary like:
-        # input_feed['test_x'] = test_x
+    def answer(self, session, dataset):
 
-        output_feed = []
-
-        outputs = session.run(output_feed, input_feed)
-
-        return outputs
-
-    def answer(self, session, test_x):
-
-        yp, yp2 = self.decode(session, test_x)
+        yp, yp2, loss = self.test(session, dataset)
 
         a_s = np.argmax(yp, axis=1)
         a_e = np.argmax(yp2, axis=1)
@@ -346,10 +330,8 @@ class QASystem(object):
 
         :return:
         """
-        valid_cost = 0
 
-        for valid_x, valid_y in valid_dataset:
-          valid_cost = self.test(sess, valid_x, valid_y)
+        _, _, valid_cost = self.test(sess, valid_dataset)
 
 
         return valid_cost
@@ -370,8 +352,19 @@ class QASystem(object):
         :return:
         """
 
-        f1 = 0.
-        em = 0.
+        dat = []; i =0 
+        for data in dataset:
+            if (i >= sample): 
+                break
+            else:
+                dat.append(data)
+                i += 1
+
+        a_s, a_o = self.answer(session, dat)
+
+        gold_answers = np.array([a for (_,_, a) in dat])
+        gold_s = gold_answers[:,0], gold_o = gold_answers[:, 1]
+    
 
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
@@ -390,10 +383,12 @@ class QASystem(object):
         for i, (q_batch, c_batch, a_batch) in enumerate(minibatches(train, self.config.batch_size)):
             input_feed = self.get_feed_dict(q_batch, c_batch, a_batch)
 
+            #gradients = tf.gradients(self.loss, tf.trainable_variables())
+
             _, train_loss, logits = session.run([self.train_op, self.loss, self.logits], feed_dict=input_feed)
 
-            print("="*50)
-            print(logits.sum(axis=-1))
+            #print("="*50)
+           # print(logits)
             prog.update(i + 1, [("train loss", train_loss)])
 
  

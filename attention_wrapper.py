@@ -423,6 +423,7 @@ class BahdanauAttention(_BaseAttentionMechanism):
     self._num_units = num_units
     self._normalize = normalize
     self._name = name
+    self.mask_func = lambda score: _maybe_mask_score(score, memory_sequence_length, score_mask_value)
 
   def __call__(self, query, previous_alignments):
     """Score the query based on the keys and values.
@@ -449,9 +450,9 @@ class BahdanauAttention(_BaseAttentionMechanism):
           "attention_v", [self._num_units], dtype=dtype)
 
       # Bias added prior to the nonlinearity
-      # b = variable_scope.get_variable(
-      #     "attention_b", [self._num_units], dtype=dtype,
-      #     initializer=init_ops.zeros_initializer())
+      b = variable_scope.get_variable(
+          "attention_b", [self._num_units], dtype=dtype,
+          initializer=init_ops.zeros_initializer())
 
       if self._normalize:
         # Scalar used in weight normalization
@@ -465,11 +466,12 @@ class BahdanauAttention(_BaseAttentionMechanism):
         score = math_ops.reduce_sum(
             normed_v * math_ops.tanh(keys + processed_query + b), [2])
       else:
-        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query),
+        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query+b),
                                     [2])
 
     alignments = self._probability_fn(score, previous_alignments)
-    return alignments
+    return alignments, self.mask_func(score)
+
 
 
 class AttentionWrapperState(
@@ -727,7 +729,7 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
     output_prev_step = state.cell_state.h # get hr_(i-1)
 
     attention_input = self._attention_input_fn(inputs, output_prev_step) # get input to BahdanauAttention to get alpha_i
-    alignments = self._attention_mechanism(
+    alignments, raw_scores = self._attention_mechanism(
         attention_input, previous_alignments=state.alignments)
 
     expanded_alignments = array_ops.expand_dims(alignments, 1)
@@ -780,6 +782,6 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
         alignment_history=alignment_history)
 
     if self._output_attention:
-      return alignments, next_state
+      return raw_scores, next_state
     else:
       return cell_output, next_state
