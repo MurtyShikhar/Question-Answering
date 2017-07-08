@@ -11,7 +11,7 @@ import tensorflow as tf
 from general_utils import Progbar
 from data_utils import *
 
-from attention_wrapper_orig import *
+from attention_wrapper import *
 #from tensorflow.contrib.seq2seq import BahdanauAttention, AttentionWrapper
 from evaluate import exact_match_score, f1_score
 
@@ -113,14 +113,29 @@ class Decoder(object):
             (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
         
         output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
-        return output_attender
+        return output_attender # mixture of question and paragraph
 
 
-    def run_answer_ptr(self, output_attender, masks):
+    # def run_answer_ptr2(self, output_attender, encoded_question, masks):
+    #     '''
+    #         output attender is a mixture of answer and question
+    #     '''
+
+    #     output_attender_shape = tf.shape(output_attender)[-1]
+    #     with tf.variable_scope("dense_vec"):
+    #         question_encoding = tf.layers.dense(encoded_question[:, -1, :], output_attender_shape)
+    #         question_encoding = tf.expand_dims(question_encoding, 1) # (batch_size, 1, 2*l)
+
+
+    #     attention_vector = tf.nn.softmax(tf.squeeze(tf.matmul(question_encoding, output_attender), -1)) # (batch_size, P)
+    #     output_attender_new = tf.matmul(tf.expand_dims(attention_vector, 1), output_attender) 
+
+
+
+    def run_answer_ptr(self, output_attender, masks, labels):
         batch_size = tf.shape(output_attender)[0]
-        dummy_input = tf.ones([batch_size, 2, 10])
         masks_question, masks_passage = masks
-
+        labels = tf.expand_dims(labels, -1)
    
 
         answer_ptr_cell_input_fn = lambda curr_input, curr_attention : curr_attention # independent of question
@@ -134,11 +149,11 @@ class Decoder(object):
         answer_ptr_attender = AttentionWrapper(self.cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
 
         with tf.variable_scope("answer_ptr_attender"):
-            logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, dummy_input, dtype = tf.float32)
+            logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, labels, dtype = tf.float32)
         return logits
 
 
-    def decode(self, encoded_rep, masks):
+    def decode(self, encoded_rep, masks, labels):
         """
         takes in encoded_rep
         and output a probability estimation over
@@ -148,13 +163,14 @@ class Decoder(object):
 
         :param encoded_rep: 
         :param masks
+        :param labels
 
 
         :return: logits: for each word in passage the probability that it is the start word and end word.
         """
 
         output_attender = self.run_match_lstm(encoded_rep, masks)
-        logits = self.run_answer_ptr(output_attender, masks)
+        logits = self.run_answer_ptr(output_attender, masks, labels)
     
         return logits
     
@@ -258,7 +274,7 @@ class QASystem(object):
         encoded_question, encoded_passage = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
                                                              encoder_state_input = None)
 
-        logits = decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths])
+        logits = decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths], self.labels)
 
         self.logits = logits
 
@@ -376,9 +392,6 @@ class QASystem(object):
 
             _, train_loss, logits = session.run([self.train_op, self.loss, self.logits], feed_dict=input_feed)
 
-            print(logits)
-            print("="*50)
-            print(logits.shape)
             print("="*50)
             print(logits.sum(axis=-1))
             prog.update(i + 1, [("train loss", train_loss)])

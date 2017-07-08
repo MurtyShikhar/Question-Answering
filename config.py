@@ -1,8 +1,8 @@
 class Config:
 	num_epochs = 10
-	batch_size = 5
-	lr = 1e-2
-	train_embeddings=True
+	batch_size = 30
+	lr = 1e-1
+	train_embeddings=False
 	max_gradient_norm=10.0
 	hidden_state_size=200
 	embedding_size=100
