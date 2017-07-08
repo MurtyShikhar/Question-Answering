@@ -298,8 +298,9 @@ class QASystem(object):
         and tune your hyperparameters according to the validation set performance
         :return:
         """
-
-        q, c, a = minibatches(valid, len(valid))
+        
+        dat = [dat for dat in minibatches(valid, len(valid))]
+        q, c, a = dat[0]
         input_feed =  self.get_feed_dict(q, c, a)
 
         output_feed = [self.logits, self.loss]
@@ -352,6 +353,7 @@ class QASystem(object):
         :return:
         """
 
+        f1=0
         dat = []; i =0 
         for data in dataset:
             if (i >= sample): 
@@ -362,9 +364,10 @@ class QASystem(object):
 
         a_s, a_o = self.answer(session, dat)
 
+        answers = np.hstack([a_s, a_o])
         gold_answers = np.array([a for (_,_, a) in dat])
-        gold_s = gold_answers[:,0], gold_o = gold_answers[:, 1]
     
+        em = np.sum(answers == gold_answers)/float(len(answers))
 
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
@@ -376,6 +379,8 @@ class QASystem(object):
         """
         Perform one complete pass over the training data and evaluate on dev
         """
+        f1, em = self.evaluate_answer(session, dev)
+        print("Exact match on dev set:",em)
 
         nbatches = (len(train) + self.config.batch_size - 1) / self.config.batch_size
         prog = Progbar(target=nbatches)
@@ -391,7 +396,6 @@ class QASystem(object):
            # print(logits)
             prog.update(i + 1, [("train loss", train_loss)])
 
- 
 
     def train(self, session, dataset, train_dir):
         """
