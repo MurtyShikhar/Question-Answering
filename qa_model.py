@@ -150,7 +150,24 @@ class Decoder(object):
 
         with tf.variable_scope("answer_ptr_attender"):
             logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, labels, dtype = tf.float32)
-        return logits
+        return logits, attention_mechanism_answer_ptr._values
+
+
+
+    # def decode2(self, encoded_rep, masks, labels):
+    #     # (-1, P, 2*l) representation of the paragraph conditioned on the question
+    #     masks_question, masks_passage = masks
+
+    #     output_attender = self.run_match_lstm(encoded_rep, masks)
+    #     output_attender_shape = tf.shape(output_attender)[-1]
+
+    #     with tf.variable_scope("luong_attenton_mechanism"):
+    #         question_encoding = tf.layers.dense(encoded_question[:, -1, :], output_attender_shape)
+    #         luong_attenton_mechanism = LuongAttention(output_attender_shape, output_attender, memory_sequence_length = masks_passage)
+    #         alignments = luong_attenton_mechanism(question_encoding, None) # (-1, P)
+    #         context = tf.expand_dims(alignments, 1)
+
+
 
 
     def decode(self, encoded_rep, masks, labels):
@@ -170,9 +187,9 @@ class Decoder(object):
         """
 
         output_attender = self.run_match_lstm(encoded_rep, masks)
-        logits = self.run_answer_ptr(output_attender, masks, labels)
+        logits, stuff = self.run_answer_ptr(output_attender, masks, labels)
     
-        return logits
+        return logits, stuff
     
 
 
@@ -275,10 +292,10 @@ class QASystem(object):
         encoded_question, encoded_passage = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
                                                              encoder_state_input = None)
 
-        logits = decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths], self.labels)
+        logits, stuff = decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths], self.labels)
 
         self.logits = logits
-
+        self.stuff = stuff
         
 
 
@@ -393,10 +410,10 @@ class QASystem(object):
 
             #gradients = tf.gradients(self.loss, tf.trainable_variables())
 
-            _, train_loss, logits = session.run([self.train_op, self.loss, self.logits], feed_dict=input_feed)
+            _, stuff, train_loss, logits = session.run([self.train_op, self.stuff, self.loss, self.logits], feed_dict=input_feed)
 
             #print("="*50)
-           # print(logits)
+            print(stuff)
             prog.update(i + 1, [("train loss", train_loss)])
 
 

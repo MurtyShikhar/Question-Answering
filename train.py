@@ -60,7 +60,7 @@ def run_func():
     train = squad_dataset(config.question_train, config.context_train, config.answer_train)
     dev = squad_dataset(config.question_dev, config.context_dev, config.answer_dev)
 
-    dev_small = [data for data in dev][:4000]
+    dev_small = [data for data in dev][:10]
 
     embed_path = config.embed_path
     vocab_path = config.vocab_path
