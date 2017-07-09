@@ -18,31 +18,10 @@ from evaluate import exact_match_score, f1_score
 logging.basicConfig(level=logging.INFO)
 
 
-def get_optimizer(opt):
-    if opt == "adam":
-        optfn = tf.train.AdamOptimizer
-    elif opt == "sgd":
-        optfn = tf.train.GradientDescentOptimizer
-    else:
-        assert (False)
-    return optfn
-
-
 class Encoder(object):
     def __init__(self, hidden_size, initializer = tf.contrib.layers.xavier_initializer):
         self.hidden_size = hidden_size
         self.init_weights = initializer
-        self.setup_params()
-
-
-    def setup_params(self):
-        with tf.variable_scope("encoder_lstm_question"):
-            lstm_cell_question = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
-        with tf.variable_scope("encoder_lstm_passage"):
-            lstm_cell_passage  = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
-
-        self.lstm_cell_question = lstm_cell_question
-        self.lstm_cell_passage = lstm_cell_passage
 
 
     def encode(self, inputs, masks, encoder_state_input = None):
@@ -62,10 +41,12 @@ class Encoder(object):
 
         # read passage conditioned upon the question
         with tf.variable_scope("encoded_question"):
-            encoded_question, _ = tf.nn.dynamic_rnn(self.lstm_cell_question, question, masks_question, dtype=tf.float32) # (-1, Q, H)
+            lstm_cell_question = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
+            encoded_question, _ = tf.nn.dynamic_rnn(lstm_cell_question, question, masks_question, dtype=tf.float32) # (-1, Q, H)
 
         with tf.variable_scope("encoded_passage"):
-            encoded_passage, _ =  tf.nn.dynamic_rnn(self.lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
+            lstm_cell_passage  = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
+            encoded_passage, _ =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
 
 
         return encoded_question, encoded_passage
@@ -75,21 +56,6 @@ class Decoder(object):
     def __init__(self, hidden_size, initializer=tf.contrib.layers.xavier_initializer):
         self.hidden_size = hidden_size
         self.init_weights = initializer
-        self.setup_params()
-
-
-    def setup_params(self):
-        with tf.variable_scope("match_lstm_forward"):
-            cell1 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-        with tf.variable_scope("match_lstm_backward"):
-            cell2 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-
-        with tf.variable_scope("answer_ptr_cell"):
-            cell_answer_ptr = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-
-        self.cell1 = cell1
-        self.cell2 = cell2
-        self.cell_answer_ptr = cell_answer_ptr
 
 
     def run_match_lstm(self, encoded_rep, masks):
@@ -99,21 +65,19 @@ class Decoder(object):
         match_lstm_cell_attention_fn = lambda curr_input, state : tf.concat([curr_input, state], axis = -1)
         query_depth = encoded_question.get_shape()[-1]
 
-        with tf.variable_scope("match_lstm_attention_mechanism"):
-            attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
 
-    
         # output attention is false because we want to output the cell output and not the attention values
-
-        forward_lstm_attender  =  AttentionWrapper(self.cell1, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-        backward_lstm_attender = AttentionWrapper(self.cell2, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-
-
         with tf.variable_scope("match_lstm_attender"):
-            (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
+            attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
+            cell1 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
+       #     cell2 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
+            forward_lstm_attender  =  AttentionWrapper(cell1, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
+        #    backward_lstm_attender = AttentionWrapper(cell2, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
+         #   (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
+            output_attender_fw, _ = tf.nn.dynamic_rnn(forward_lstm_attender, encoded_passage, dtype=tf.float32)
         
-        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
-        return output_attender # mixture of question and paragraph
+#        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
+        return output_attender_fw # mixture of question and paragraph
 
 
     # def run_answer_ptr2(self, output_attender, encoded_question, masks):
@@ -137,20 +101,17 @@ class Decoder(object):
         masks_question, masks_passage = masks
         labels = tf.ones([batch_size, 2, 1])
    
-
         answer_ptr_cell_input_fn = lambda curr_input, curr_attention : curr_attention # independent of question
         query_depth_answer_ptr = output_attender.get_shape()[-1]
 
-
-        with tf.variable_scope("answer_ptr_attention_mechanism"):
-            attention_mechanism_answer_ptr = BahdanauAttention(query_depth_answer_ptr , output_attender, memory_sequence_length = masks_passage)
-
-        # output attention is true because we want to output the attention values
-        answer_ptr_attender = AttentionWrapper(self.cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
-
         with tf.variable_scope("answer_ptr_attender"):
+            attention_mechanism_answer_ptr = BahdanauAttention(query_depth_answer_ptr , output_attender, memory_sequence_length = masks_passage)
+            # output attention is true because we want to output the attention values
+            cell_answer_ptr = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
+            answer_ptr_attender = AttentionWrapper(cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
             logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, labels, dtype = tf.float32)
-        return logits, attention_mechanism_answer_ptr._values
+
+        return logits
 
 
 
@@ -187,9 +148,9 @@ class Decoder(object):
         """
 
         output_attender = self.run_match_lstm(encoded_rep, masks)
-        logits, stuff = self.run_answer_ptr(output_attender, masks, labels)
+        logits = self.run_answer_ptr(output_attender, masks, labels)
     
-        return logits, stuff
+        return logits
     
 
 
@@ -230,12 +191,9 @@ class QASystem(object):
         Add train_op to self
         """
         with tf.variable_scope("train_step"):
-            global_step = tf.contrib.framework.get_or_create_global_step()
-            self.train_op = tf.contrib.layers.optimize_loss(
-                loss=self.loss,
-                global_step=global_step,
-                learning_rate=self.config.lr,
-                optimizer='Adam')
+            adam_optimizer = tf.train.AdamOptimizer()
+            self.gradients = adam_optimizer.compute_gradients(self.loss)
+            self.train_op = adam_optimizer.apply_gradients(self.gradients)
 
         self.init = tf.global_variables_initializer()
 
@@ -292,10 +250,9 @@ class QASystem(object):
         encoded_question, encoded_passage = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
                                                              encoder_state_input = None)
 
-        logits, stuff = decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths], self.labels)
+        logits= decoder.decode([encoded_question, encoded_passage], [self.question_lengths, self.passage_lengths], self.labels)
 
         self.logits = logits
-        self.stuff = stuff
         
 
 
@@ -399,8 +356,8 @@ class QASystem(object):
         """
         Perform one complete pass over the training data and evaluate on dev
         """
-        f1, em = self.evaluate_answer(session, dev)
-        print("Exact match on dev set:",em)
+        #f1, em = self.evaluate_answer(session, dev)
+        #print("Exact match on dev set:",em)
 
         nbatches = (len(train) + self.config.batch_size - 1) / self.config.batch_size
         prog = Progbar(target=nbatches)
@@ -410,10 +367,12 @@ class QASystem(object):
 
             #gradients = tf.gradients(self.loss, tf.trainable_variables())
 
-            _, stuff, train_loss, logits = session.run([self.train_op, self.stuff, self.loss, self.logits], feed_dict=input_feed)
+            _, gradients, train_loss, logits = session.run([self.train_op, self.gradients, self.loss, self.logits], feed_dict=input_feed)
 
             #print("="*50)
-            print(stuff)
+            for grad, sym_grad in zip(gradients, self.gradients):
+                print(grad[0].shape, sym_grad[1].name)
+                
             prog.update(i + 1, [("train loss", train_loss)])
 
 

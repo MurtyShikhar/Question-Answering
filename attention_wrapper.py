@@ -442,17 +442,13 @@ class BahdanauAttention(_BaseAttentionMechanism):
     """
     with variable_scope.variable_scope(None, "bahdanau_attention", [query]):
       processed_query = self.query_layer(query) if self.query_layer else query
-      dtype = processed_query.dtype
       # Reshape from [batch_size, ...] to [batch_size, 1, ...] for broadcasting.
       processed_query = array_ops.expand_dims(processed_query, 1)
       keys = self._keys
+      dtype = query.dtype
       v = variable_scope.get_variable(
-          "attention_v", [self._num_units], dtype=dtype)
+              "attention_v", [self._num_units], dtype=dtype)
 
-      # Bias added prior to the nonlinearity
-      b = variable_scope.get_variable(
-          "attention_b", [self._num_units], dtype=dtype,
-          initializer=init_ops.zeros_initializer())
 
       if self._normalize:
         # Scalar used in weight normalization
@@ -466,7 +462,7 @@ class BahdanauAttention(_BaseAttentionMechanism):
         score = math_ops.reduce_sum(
             normed_v * math_ops.tanh(keys + processed_query + b), [2])
       else:
-        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query+b),
+        score = math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query),
                                     [2])
 
     alignments = self._probability_fn(score, previous_alignments)
