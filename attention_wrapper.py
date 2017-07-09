@@ -53,6 +53,24 @@ _zero_state_tensors = rnn_cell_impl._zero_state_tensors  # pylint: disable=prote
 class AttentionMechanism(object):
   pass
 
+def _maybe_mask(m, seq_len_mask):
+  rank = m.get_shape().ndims
+  rank = rank if rank is not None else array_ops.rank(m)
+  extra_ones = array_ops.ones(rank - 2, dtype=dtypes.int32)
+  m_batch_size = m.shape[0].value or array_ops.shape(m)[0]
+  if memory_sequence_length is not None:
+    message = ("memory_sequence_length and memory tensor batch sizes do not "
+               "match.")
+    with ops.control_dependencies([
+        check_ops.assert_equal(
+            seq_len_batch_size, m_batch_size, message=message)]):
+      seq_len_mask = array_ops.reshape(
+          seq_len_mask,
+          array_ops.concat((array_ops.shape(seq_len_mask), extra_ones), 0))
+      return m * seq_len_mask
+  else:
+    return m
+
 
 def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
   """Convert to tensor and possibly mask `memory`.
@@ -92,23 +110,6 @@ def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
     seq_len_batch_size = (
         memory_sequence_length.shape[0].value
         or array_ops.shape(memory_sequence_length)[0])
-  def _maybe_mask(m, seq_len_mask):
-    rank = m.get_shape().ndims
-    rank = rank if rank is not None else array_ops.rank(m)
-    extra_ones = array_ops.ones(rank - 2, dtype=dtypes.int32)
-    m_batch_size = m.shape[0].value or array_ops.shape(m)[0]
-    if memory_sequence_length is not None:
-      message = ("memory_sequence_length and memory tensor batch sizes do not "
-                 "match.")
-      with ops.control_dependencies([
-          check_ops.assert_equal(
-              seq_len_batch_size, m_batch_size, message=message)]):
-        seq_len_mask = array_ops.reshape(
-            seq_len_mask,
-            array_ops.concat((array_ops.shape(seq_len_mask), extra_ones), 0))
-        return m * seq_len_mask
-    else:
-      return m
   return nest.map_structure(lambda m: _maybe_mask(m, seq_len_mask), memory)
 
 

@@ -60,7 +60,7 @@ def run_func():
     train = squad_dataset(config.question_train, config.context_train, config.answer_train)
     dev = squad_dataset(config.question_dev, config.context_dev, config.answer_dev)
 
-    dev_small = [data for data in dev][:400]
+    dev_small = [data for data in dev][:1]
 
     embed_path = config.embed_path
     vocab_path = config.vocab_path
@@ -73,7 +73,7 @@ def run_func():
     decoder = Decoder(config.hidden_state_size)
 
     qa = QASystem(encoder, decoder, embeddings, config)
-
+    
     with tf.Session() as sess:
         qa.train(sess, [dev_small, dev_small], "")
 
