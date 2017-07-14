@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 class Encoder(object):
-    def __init__(self, hidden_size, initializer = tf.contrib.layers.xavier_initializer):
+    def __init__(self, hidden_size, initializer = lambda : None)#tf.contrib.layers.xavier_initializer):
         self.hidden_size = hidden_size
         self.init_weights = initializer
 
@@ -51,12 +51,11 @@ class Encoder(object):
             lstm_cell_passage  = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
             encoded_passage, _ =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
 
-        print("last state", last_state.get_shape())
         return encoded_question, last_state , encoded_passage
 
    
 class Decoder(object):
-    def __init__(self, hidden_size, initializer=tf.contrib.layers.xavier_initializer):
+    def __init__(self, hidden_size, initializer= lambda : None):
         self.hidden_size = hidden_size
         self.init_weights = initializer
 
@@ -71,16 +70,14 @@ class Decoder(object):
 
         # output attention is false because we want to output the cell output and not the attention values
         with tf.variable_scope("match_lstm_attender"):
-            #attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
+            attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
             cell1 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-       #     cell2 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-            #forward_lstm_attender  =  AttentionWrapper(cell1, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-        #    backward_lstm_attender = AttentionWrapper(cell2, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-         #   (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
-            output_attender_fw, _ = tf.nn.dynamic_rnn(cell1, encoded_passage, dtype=tf.float32)
+            cell2 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
+            forward_lstm_attender  = AttentionWrapper(cell1, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
+            backward_lstm_attender = AttentionWrapper(cell2, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
+            (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
         
-#        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
-        return output_attender_fw # mixture of question and paragraph
+        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
 
 
     # def run_answer_ptr2(self, output_attender, encoded_question, masks):
@@ -99,14 +96,14 @@ class Decoder(object):
 
 
 
-    def run_answer_ptr2(self, output_attender,q_rep,  masks, lablels):
-        # output_attender : (-1, P, 2*l)
-        masks_question, masks_passage = masks
-        depth = output_attender.get_shape()[-1]
-        question_encoding = tf.layers.dense(output_attender, depth)
-        scores =  tf.reduce_sum(tf.expand_dims(q_rep, 1)*tf.tanh(question_encoding), [2])
+    # def run_answer_ptr2(self, output_attender,q_rep,  masks, lablels):
+    #     # output_attender : (-1, P, 2*l)
+    #     masks_question, masks_passage = masks
+    #     depth = output_attender.get_shape()[-1]
+    #     question_encoding = tf.layers.dense(output_attender, depth)
+    #     scores =  tf.reduce_sum(tf.expand_dims(q_rep, 1)*tf.tanh(question_encoding), [2])
         
-        return _maybe_mask_score(scores, masks_passage, float("-inf"))
+    #     return _maybe_mask_score(scores, masks_passage, float("-inf"))
 
     def run_answer_ptr(self, output_attender, masks, labels):
         batch_size = tf.shape(output_attender)[0]
@@ -123,7 +120,7 @@ class Decoder(object):
             answer_ptr_attender = AttentionWrapper(cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
             logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, labels, dtype = tf.float32)
 
-        return logits[:,0,:]
+        return logits
 
 
 
@@ -160,7 +157,7 @@ class Decoder(object):
         """
 
         output_attender = self.run_match_lstm(encoded_rep, masks)
-        logits = self.run_answer_ptr2(output_attender, q_rep, masks, labels)
+        logits = self.run_answer_ptr(output_attender, masks, labels)
     
         return logits
     
@@ -215,17 +212,10 @@ class QASystem(object):
         :return: dict {placeholders: value}
         """
 
-        contexts = [[0, 1, 2, 3] for c in contexts]
         padded_questions, question_lengths = pad_sequences(questions, 0)
         padded_contexts, passage_lengths = pad_sequences(contexts, 0)
 
-        # print(padded_questions)
-        # print(question_lengths)
-        # print(passage_lengths)
 
-        # print(answers)
-
-        answers = [1 for (a, b) in answers]
         feed = {
             self.question_ids : padded_questions,
             self.passage_ids : padded_contexts,
@@ -383,13 +373,11 @@ class QASystem(object):
 
             #gradients = tf.gradients(self.loss, tf.trainable_variables())
 
-            _, prob, train_loss, logits = session.run([self.train_op, self.probs, self.loss, self.logits], feed_dict=input_feed)
+            _, gradients, train_loss = session.run([self.train_op, self.gradients, self.loss], feed_dict=input_feed)
             print("=======",train_loss, "======")
-            print(prob)
-            print(logits)
-            #print("="*50)
-        #    for grad, sym_grad in zip(gradients, self.gradients):
-         #       print(grad[0].shape, sym_grad[1].name)
+
+            for grad, sym_grad in zip(gradients, self.gradients):
+                print(grad[0].shape, sym_grad[1].name)
                 
           #  prog.update(i + 1, [("train loss", train_loss)])
 

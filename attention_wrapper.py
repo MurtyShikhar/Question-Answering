@@ -593,7 +593,7 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
 ########### ADDED TO ALLOW DIFFERENT INPUTS TO ATTENTION MECHANISM #############
     if attention_input_fn is None:
       attention_input_fn = (
-          lambda inputs, state: state)
+          lambda _, state: state)
     else:
       if not callable(attention_input_fn):
         raise TypeError(
