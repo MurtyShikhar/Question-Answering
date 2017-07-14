@@ -373,6 +373,8 @@ class QASystem(object):
         #f1, em = self.evaluate_answer(session, dev)
         #print("Exact match on dev set:",em)
 
+        writer = tf.summary.FileWriter("qa_model1")
+        writer.add_graph(session.graph)
         nbatches = (len(train) + self.config.batch_size - 1) / self.config.batch_size
         #prog = Progbar(target=nbatches)
 
