@@ -10,19 +10,38 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from general_utils import Progbar
 from data_utils import *
-
+from collections import defaultdict as ddict
 
 from attention_wrapper import _maybe_mask_score
 from attention_wrapper import *
 #from tensorflow.contrib.seq2seq import BahdanauAttention, AttentionWrapper
 from evaluate import exact_match_score, f1_score
 from tensorflow.python import debug as tf_debug
+from tensorflow.python.ops import array_ops
+
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 
 logging.basicConfig(level=logging.INFO)
 
 
+
+# -- A helper function to reverse a tensor along seq_dim
+def _reverse(input_, seq_lengths, seq_dim, batch_dim):
+  if seq_lengths is not None:
+    return array_ops.reverse_sequence(
+        input=input_, seq_lengths=seq_lengths,
+        seq_dim=seq_dim, batch_dim=batch_dim)
+  else:
+    return array_ops.reverse(input_, axis=[seq_dim])
+
+
+
 class Encoder(object):
-    def __init__(self, hidden_size, initializer = lambda : None)#tf.contrib.layers.xavier_initializer):
+    def __init__(self, hidden_size, initializer = lambda : None):#tf.contrib.layers.xavier_initializer):
         self.hidden_size = hidden_size
         self.init_weights = initializer
 
@@ -44,11 +63,11 @@ class Encoder(object):
 
         # read passage conditioned upon the question
         with tf.variable_scope("encoded_question"):
-            lstm_cell_question = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
+            lstm_cell_question = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
             encoded_question, (last_state, _) = tf.nn.dynamic_rnn(lstm_cell_question, question, masks_question, dtype=tf.float32) # (-1, Q, H)
 
         with tf.variable_scope("encoded_passage"):
-            lstm_cell_passage  = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True)
+            lstm_cell_passage  = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
             encoded_passage, _ =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
 
         return encoded_question, last_state , encoded_passage
@@ -70,73 +89,43 @@ class Decoder(object):
 
         # output attention is false because we want to output the cell output and not the attention values
         with tf.variable_scope("match_lstm_attender"):
+            #scope = tf.VariableScope(name = "rnn",  reuse=True)
+
             attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
-            cell1 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-            cell2 = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
-            forward_lstm_attender  = AttentionWrapper(cell1, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-            backward_lstm_attender = AttentionWrapper(cell2, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
-            (output_attender_fw, output_attender_bw) , _ = tf.nn.bidirectional_dynamic_rnn(forward_lstm_attender, backward_lstm_attender,encoded_passage, dtype=tf.float32)
+            cell = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
+            lstm_attender  = AttentionWrapper(cell, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
+
+            # we don't mask the passage because masking the memories will be handled by the pointerNet
+            #reverse_encoded_passage = _reverse(encoded_passage, None, 1, 0)
+
+            output_attender_fw, _ = tf.nn.dynamic_rnn(lstm_attender, encoded_passage, dtype=tf.float32, scope ="rnn")    
+            #output_attender_bw, _ = tf.nn.dynamic_rnn(lstm_attender, reverse_encoded_passage, dtype=tf.float32, scope = "rnn")
+
+            #output_attender_bw = _reverse(output_attender_bw, None, 1, 0)
+
         
-        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
+        #output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
+        return output_attender_fw
 
-
-    # def run_answer_ptr2(self, output_attender, encoded_question, masks):
-    #     '''
-    #         output attender is a mixture of answer and question
-    #     '''
-
-    #     output_attender_shape = tf.shape(output_attender)[-1]
-    #     with tf.variable_scope("dense_vec"):
-    #         question_encoding = tf.layers.dense(encoded_question[:, -1, :], output_attender_shape)
-    #         question_encoding = tf.expand_dims(question_encoding, 1) # (batch_size, 1, 2*l)
-
-
-    #     attention_vector = tf.nn.softmax(tf.squeeze(tf.matmul(question_encoding, output_attender), -1)) # (batch_size, P)
-    #     output_attender_new = tf.matmul(tf.expand_dims(attention_vector, 1), output_attender) 
-
-
-
-    # def run_answer_ptr2(self, output_attender,q_rep,  masks, lablels):
-    #     # output_attender : (-1, P, 2*l)
-    #     masks_question, masks_passage = masks
-    #     depth = output_attender.get_shape()[-1]
-    #     question_encoding = tf.layers.dense(output_attender, depth)
-    #     scores =  tf.reduce_sum(tf.expand_dims(q_rep, 1)*tf.tanh(question_encoding), [2])
-        
-    #     return _maybe_mask_score(scores, masks_passage, float("-inf"))
 
     def run_answer_ptr(self, output_attender, masks, labels):
         batch_size = tf.shape(output_attender)[0]
         masks_question, masks_passage = masks
-        labels = tf.ones([batch_size, 1, 1])
-   
-        answer_ptr_cell_input_fn = lambda curr_input, curr_attention : curr_attention # independent of question
+        labels = [tf.ones([batch_size, 1]), tf.ones([batch_size,1]) ]
+        #labels = tf.ones([batch_size, 2, 1])
+
+
+        answer_ptr_cell_input_fn = lambda curr_input, context : context # independent of question
         query_depth_answer_ptr = output_attender.get_shape()[-1]
 
         with tf.variable_scope("answer_ptr_attender"):
             attention_mechanism_answer_ptr = BahdanauAttention(query_depth_answer_ptr , output_attender, memory_sequence_length = masks_passage)
             # output attention is true because we want to output the attention values
-            cell_answer_ptr = tf.contrib.rnn.LSTMCell(self.hidden_size, initializer = self.init_weights(), state_is_tuple = True )
+            cell_answer_ptr = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True )
             answer_ptr_attender = AttentionWrapper(cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
-            logits, _ = tf.nn.dynamic_rnn(answer_ptr_attender, labels, dtype = tf.float32)
+            logits, _ = tf.nn.static_rnn(answer_ptr_attender, labels, dtype = tf.float32)
 
         return logits
-
-
-
-    # def decode2(self, encoded_rep, masks, labels):
-    #     # (-1, P, 2*l) representation of the paragraph conditioned on the question
-    #     masks_question, masks_passage = masks
-
-    #     output_attender = self.run_match_lstm(encoded_rep, masks)
-    #     output_attender_shape = tf.shape(output_attender)[-1]
-
-    #     with tf.variable_scope("luong_attenton_mechanism"):
-    #         question_encoding = tf.layers.dense(encoded_question[:, -1, :], output_attender_shape)
-    #         luong_attenton_mechanism = LuongAttention(output_attender_shape, output_attender, memory_sequence_length = masks_passage)
-    #         alignments = luong_attenton_mechanism(question_encoding, None) # (-1, P)
-    #         context = tf.expand_dims(alignments, 1)
-
 
 
 
@@ -200,8 +189,13 @@ class QASystem(object):
         Add train_op to self
         """
         with tf.variable_scope("train_step"):
-            adam_optimizer = tf.train.AdamOptimizer()
-            self.gradients = adam_optimizer.compute_gradients(self.loss)
+            adam_optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+            grads, vars = zip(*adam_optimizer.compute_gradients(self.loss))
+            #clipped_grads, _ = tf.clip_by_global_norm(grads, 4.0)
+
+            self.global_grad = tf.global_norm(grads)
+            self.gradients = zip(grads, vars)
+
             self.train_op = adam_optimizer.apply_gradients(self.gradients)
 
         self.init = tf.global_variables_initializer()
@@ -242,7 +236,7 @@ class QASystem(object):
         self.question_lengths = tf.placeholder(tf.int32, shape=[None], name="question_lengths")
         self.passage_lengths = tf.placeholder(tf.int32, shape = [None], name = "passage_lengths")
 
-        self.labels = tf.placeholder(tf.int32, shape = [None], name = "gold_labels")
+        self.labels = tf.placeholder(tf.int32, shape = [None, None], name = "gold_labels")
 
 
     def setup_system(self):
@@ -257,7 +251,6 @@ class QASystem(object):
         logits= decoder.decode([encoded_question, encoded_passage], q_rep, [self.question_lengths, self.passage_lengths], self.labels)
 
         self.logits = logits
-        self.probs = tf.nn.softmax(logits) 
 
 
     def setup_loss(self):
@@ -267,7 +260,8 @@ class QASystem(object):
         """
 
         
-        losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=self.labels)
+        losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits[0], labels=self.labels[:,0])
+        losses += tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits[1], labels=self.labels[:,1])
         self.loss = tf.reduce_mean(losses)
 
 
@@ -294,8 +288,19 @@ class QASystem(object):
 
         yp, yp2, loss = self.test(session, dataset)
 
-        a_s = np.argmax(yp, axis=1)
-        a_e = np.argmax(yp2, axis=1)
+        max_ans = -999999
+        a_s, a_e= 0,0
+        for i in xrange(yp.shape[1]):
+            for j in xrange(15):
+                if i+j > yp.shape[1]:
+                    break
+
+                curr_a_s = yp[i];
+                curr_a_e = yp2[i+j]
+                if (curr_a_e+curr_a_s) > max_ans:
+                    max_ans = curr_a_e + curr_a_s
+                    a_s = curr_a_s
+                    a_e = curr_a_e
 
         return (a_s, a_e)
 
@@ -368,18 +373,47 @@ class QASystem(object):
         nbatches = (len(train) + self.config.batch_size - 1) / self.config.batch_size
         #prog = Progbar(target=nbatches)
 
+        grad_graph = ddict(list)
+        train_loss_graph = []
+        global_grad_graph = []
+
         for i, (q_batch, c_batch, a_batch) in enumerate(minibatches(train, self.config.batch_size)):
             input_feed = self.get_feed_dict(q_batch, c_batch, a_batch)
 
             #gradients = tf.gradients(self.loss, tf.trainable_variables())
 
-            _, gradients, train_loss = session.run([self.train_op, self.gradients, self.loss], feed_dict=input_feed)
-            print("=======",train_loss, "======")
+            _, gradients, train_loss, global_grad = session.run([self.train_op, self.gradients, self.loss, self.global_grad], feed_dict=input_feed)
+            print("=======LOSS: ",train_loss, "=============GRAD: ", global_grad, "======")
+        
+            global_grad_graph.append(global_grad)
+            train_loss_graph.append(train_loss)
 
             for grad, sym_grad in zip(gradients, self.gradients):
-                print(grad[0].shape, sym_grad[1].name)
-                
-          #  prog.update(i + 1, [("train loss", train_loss)])
+                var_name = ":".join(sym_grad[1].name.split("/"))
+                grad_graph[var_name].append(np.linalg.norm(grad[0]))
+                f = open("params/%s" %var_name, "w")
+                np.savetxt(f,grad[0])
+                f.close()
+                #print(np.linalg.norm(grad[0]), sym_grad[1].name)
+        
+
+        return grad_graph, train_loss_graph, global_grad_graph        
+
+    def construct_graph(self, grad_graph, train_loss_graph, global_grad_graph, epoch):
+
+        num_figs = len(grad_graph) + 2
+        plt.figure(num_figs*epoch)
+        plt.plot(train_loss_graph)
+        plt.savefig("figs/%s-train_loss_graph.png" %epoch)
+        plt.figure(num_figs*epoch+1)
+        plt.plot(global_grad_graph)
+        plt.savefig("figs/%s-global_grad_graph.png" %epoch)
+
+        for i,key in enumerate(grad_graph):
+            plt.figure(num_figs*epoch + 2+i)
+            plt.plot(grad_graph[key])
+            plt.savefig("figs/%s-%s.png" %(epoch,key))
+
 
 
     def train(self, session, dataset, train_dir):
@@ -420,7 +454,11 @@ class QASystem(object):
         toc = time.time()
         print("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
 
-
+        train_loss = []
         for epoch in xrange(self.config.num_epochs):
+            print("*********************EPOCH: %d*********************" %(epoch+1))
             session.run(self.init)
-            self.run_epoch(session, train, dev, epoch)
+            grad_graph, train_loss_graph, global_grad_graph = self.run_epoch(session, train, dev, epoch)
+
+            train_loss += train_loss_graph
+            self.construct_graph( grad_graph, train_loss, global_grad_graph, epoch)

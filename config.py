@@ -1,10 +1,10 @@
 class Config:
 	num_epochs = 1000
-	batch_size = 1
+	batch_size = 32
 	lr = 1e-2
 	train_embeddings=False
 	max_gradient_norm=10.0
-	hidden_state_size=20
+	hidden_state_size=10
 	embedding_size=100
 	data_dir="data/squad"
 	vocab_path="data/squad/vocab.dat"

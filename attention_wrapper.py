@@ -53,23 +53,7 @@ _zero_state_tensors = rnn_cell_impl._zero_state_tensors  # pylint: disable=prote
 class AttentionMechanism(object):
   pass
 
-def _maybe_mask(m, seq_len_mask):
-  rank = m.get_shape().ndims
-  rank = rank if rank is not None else array_ops.rank(m)
-  extra_ones = array_ops.ones(rank - 2, dtype=dtypes.int32)
-  m_batch_size = m.shape[0].value or array_ops.shape(m)[0]
-  if memory_sequence_length is not None:
-    message = ("memory_sequence_length and memory tensor batch sizes do not "
-               "match.")
-    with ops.control_dependencies([
-        check_ops.assert_equal(
-            seq_len_batch_size, m_batch_size, message=message)]):
-      seq_len_mask = array_ops.reshape(
-          seq_len_mask,
-          array_ops.concat((array_ops.shape(seq_len_mask), extra_ones), 0))
-      return m * seq_len_mask
-  else:
-    return m
+
 
 
 def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
@@ -91,6 +75,29 @@ def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
   """
   memory = nest.map_structure(
       lambda m: ops.convert_to_tensor(m, name="memory"), memory)
+
+  def _maybe_mask(m, seq_len_mask):
+    rank = m.get_shape().ndims
+    rank = rank if rank is not None else array_ops.rank(m)
+    extra_ones = array_ops.ones(rank - 2, dtype=dtypes.int32)
+    m_batch_size = m.shape[0].value or array_ops.shape(m)[0]
+    if memory_sequence_length is not None:
+      message = ("memory_sequence_length and memory tensor batch sizes do not "
+                 "match.")
+      with ops.control_dependencies([
+          check_ops.assert_equal(
+              seq_len_batch_size, m_batch_size, message=message)]):
+        seq_len_mask = array_ops.reshape(
+            seq_len_mask,
+            array_ops.concat((array_ops.shape(seq_len_mask), extra_ones), 0))
+        return m * seq_len_mask
+    else:
+      return m
+
+
+
+
+
   if memory_sequence_length is not None:
     memory_sequence_length = ops.convert_to_tensor(
         memory_sequence_length, name="memory_sequence_length")
@@ -110,6 +117,10 @@ def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
     seq_len_batch_size = (
         memory_sequence_length.shape[0].value
         or array_ops.shape(memory_sequence_length)[0])
+
+
+
+    
   return nest.map_structure(lambda m: _maybe_mask(m, seq_len_mask), memory)
 
 
@@ -168,33 +179,55 @@ class _BaseAttentionMechanism(AttentionMechanism):
         `memory_sequence_length` is not None.
       name: Name to use when creating ops.
     """
+
+    #-- Some sanity checks
+
     if (query_layer is not None
         and not isinstance(query_layer, layers_base.Layer)):
       raise TypeError(
           "query_layer is not a Layer: %s" % type(query_layer).__name__)
+
+
     if (memory_layer is not None
         and not isinstance(memory_layer, layers_base.Layer)):
       raise TypeError(
           "memory_layer is not a Layer: %s" % type(memory_layer).__name__)
+
+
     self._query_layer = query_layer
     self._memory_layer = memory_layer
+
+
     if not callable(probability_fn):
       raise TypeError("probability_fn must be callable, saw type: %s" %
                       type(probability_fn).__name__)
+
+
+    # --all scores beyond a particular length are masked off to negative infinity, so softmax for those things is basically 0
+
     self._probability_fn = lambda score, prev: (  # pylint:disable=g-long-lambda
         probability_fn(
             _maybe_mask_score(score, memory_sequence_length, score_mask_value),
             prev))
+
+
     with ops.name_scope(
         name, "BaseAttentionMechanismInit", nest.flatten(memory)):
+
+      # -- perform basic sanity check on the memory vectors and mask them to zeros beyond their respective lengths
       self._values = _prepare_memory(
           memory, memory_sequence_length,
           check_inner_dims_defined=check_inner_dims_defined)
+
+      # -- preprocess the keys (because it can be done) and this is more efficient than affine transforming the memory every time
       self._keys = (
           self.memory_layer(self._values) if self.memory_layer  # pylint: disable=not-callable
           else self._values)
+
       self._batch_size = (
           self._keys.shape[0].value or array_ops.shape(self._keys)[0])
+
+      # -- _alignments_size is the length of the max number of tokens
       self._alignments_size = (self._keys.shape[1].value or
                                array_ops.shape(self._keys)[1])
 
@@ -410,7 +443,12 @@ class BahdanauAttention(_BaseAttentionMechanism):
     """
     if probability_fn is None:
       probability_fn = nn_ops.softmax
+
     wrapped_probability_fn = lambda score, _: probability_fn(score)
+
+    # query layer : every query is multiplied by this 
+    # memory layer : the entire memory unit is multipled by this where memory is a (-1, #memory_tokens, dim) tensor
+
     super(BahdanauAttention, self).__init__(
         query_layer=layers_core.Dense(
             num_units, name="query_layer", use_bias=True),
@@ -421,6 +459,8 @@ class BahdanauAttention(_BaseAttentionMechanism):
         memory_sequence_length=memory_sequence_length,
         score_mask_value=score_mask_value,
         name=name)
+
+
     self._num_units = num_units
     self._normalize = normalize
     self._name = name
@@ -581,6 +621,8 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
       raise TypeError(
           "attention_mechanism must be a AttentionMechanism, saw type: %s"
           % type(attention_mechanism).__name__)
+
+    # -- what gets inputed to the core RNN cell we're wrapping around  
     if cell_input_fn is None:
       cell_input_fn = (
           lambda inputs, attention: array_ops.concat([inputs, attention], -1))
@@ -591,6 +633,8 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
             % type(cell_input_fn).__name__)
 
 ########### ADDED TO ALLOW DIFFERENT INPUTS TO ATTENTION MECHANISM #############
+
+    # what the attention unit gets as the query
     if attention_input_fn is None:
       attention_input_fn = (
           lambda _, state: state)
@@ -740,21 +784,21 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
     cell_state = state.cell_state
     cell_output, next_cell_state = self._cell(cell_inputs, cell_state)
 
-    cell_batch_size = (
-        cell_output.shape[0].value or array_ops.shape(cell_output)[0])
-    error_message = (
-        "When applying AttentionWrapper %s: " % self.name +
-        "Non-matching batch sizes between the memory "
-        "(encoder output) and the query (decoder output).  Are you using "
-        "the BeamSearchDecoder?  You may need to tile your memory input via "
-        "the tf.contrib.seq2seq.tile_batch function with argument "
-        "multiple=beam_width.")
-    with ops.control_dependencies(
-        [check_ops.assert_equal(cell_batch_size,
-                                self._attention_mechanism.batch_size,
-                                message=error_message)]):
-      cell_output = array_ops.identity(
-          cell_output, name="checked_cell_output")
+    # cell_batch_size = (
+    #     cell_output.shape[0].value or array_ops.shape(cell_output)[0])
+    # error_message = (
+    #     "When applying AttentionWrapper %s: " % self.name +
+    #     "Non-matching batch sizes between the memory "
+    #     "(encoder output) and the query (decoder output).  Are you using "
+    #     "the BeamSearchDecoder?  You may need to tile your memory input via "
+    #     "the tf.contrib.seq2seq.tile_batch function with argument "
+    #     "multiple=beam_width.")
+    # with ops.control_dependencies(
+    #     [check_ops.assert_equal(cell_batch_size,
+    #                             self._attention_mechanism.batch_size,
+    #                             message=error_message)]):
+    #   cell_output = array_ops.identity(
+    #       cell_output, name="checked_cell_output")
 
 
 
