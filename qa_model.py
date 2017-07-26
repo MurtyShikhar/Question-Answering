@@ -96,16 +96,16 @@ class Decoder(object):
             lstm_attender  = AttentionWrapper(cell, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
 
             # we don't mask the passage because masking the memories will be handled by the pointerNet
-            #reverse_encoded_passage = _reverse(encoded_passage, None, 1, 0)
+            reverse_encoded_passage = _reverse(encoded_passage, masks_passage, 1, 0)
 
             output_attender_fw, _ = tf.nn.dynamic_rnn(lstm_attender, encoded_passage, dtype=tf.float32, scope ="rnn")    
-            #output_attender_bw, _ = tf.nn.dynamic_rnn(lstm_attender, reverse_encoded_passage, dtype=tf.float32, scope = "rnn")
+            output_attender_bw, _ = tf.nn.dynamic_rnn(lstm_attender, reverse_encoded_passage, dtype=tf.float32, scope = "rnn")
 
-            #output_attender_bw = _reverse(output_attender_bw, None, 1, 0)
+            output_attender_bw = _reverse(output_attender_bw, masks_passage, 1, 0)
 
         
-        #output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
-        return output_attender_fw
+        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
+        return output_attender
 
 
     def run_answer_ptr(self, output_attender, masks, labels):
@@ -189,7 +189,7 @@ class QASystem(object):
         Add train_op to self
         """
         with tf.variable_scope("train_step"):
-            adam_optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+            adam_optimizer = tf.train.AdamOptimizer()
             grads, vars = zip(*adam_optimizer.compute_gradients(self.loss))
             #clipped_grads, _ = tf.clip_by_global_norm(grads, 4.0)
 
