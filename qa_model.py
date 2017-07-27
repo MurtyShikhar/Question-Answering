@@ -64,13 +64,37 @@ class Encoder(object):
         # read passage conditioned upon the question
         with tf.variable_scope("encoded_question"):
             lstm_cell_question = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
-            encoded_question, (last_state, _) = tf.nn.dynamic_rnn(lstm_cell_question, question, masks_question, dtype=tf.float32) # (-1, Q, H)
+            encoded_question, (q_rep, _) = tf.nn.dynamic_rnn(lstm_cell_question, question, masks_question, dtype=tf.float32) # (-1, Q, H)
 
         with tf.variable_scope("encoded_passage"):
             lstm_cell_passage  = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
-            encoded_passage, _ =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
+            encoded_passage, (p_rep, _) =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
 
-        return encoded_question, last_state , encoded_passage
+        return encoded_question, encoded_passage , q_rep, p_rep
+
+
+class BaselineDecoder(object):
+    def __init__(self):
+        return
+
+    def decode(self, encoded_passage , q_rep, mask, labels):
+
+        # (batch_size, 1, D),  (batch_size, Q, D)
+        input_size = q_rep.get_shape()[-1]
+        q_rep1 = tf.layers.dense(q_rep, input_size, name="W1")
+        q_rep2 = tf.layers.dense(q_rep, input_size, name="W2")
+
+
+        q_rep1 = tf.expand_dims(q_rep1, 1)
+        logit_1 = tf.reduce_sum(q_rep1*encoded_passage, [2])
+
+        q_rep2 = tf.expand_dims(q_rep2, 1)
+        logit_2 = tf.reduce_sum(q_rep2*encoded_passage, [2])
+
+        func = lambda score: _maybe_mask_score(score, mask, float("-inf"))
+
+        return [func(logit_1),func(logit_2)]
+
 
    
 class Decoder(object):
@@ -111,7 +135,7 @@ class Decoder(object):
     def run_answer_ptr(self, output_attender, masks, labels):
         batch_size = tf.shape(output_attender)[0]
         masks_question, masks_passage = masks
-        labels = [tf.ones([batch_size, 1]), tf.ones([batch_size,1]) ]
+        labels = tf.unstack(labels, axis=1) 
         #labels = tf.ones([batch_size, 2, 1])
 
 
@@ -125,7 +149,7 @@ class Decoder(object):
             answer_ptr_attender = AttentionWrapper(cell_answer_ptr, attention_mechanism_answer_ptr, cell_input_fn = answer_ptr_cell_input_fn)
             logits, _ = tf.nn.static_rnn(answer_ptr_attender, labels, dtype = tf.float32)
 
-        return logits
+        return logits 
 
 
 
@@ -172,8 +196,6 @@ class QASystem(object):
 
         self.setup_placeholders()
 
-
-
         # ==== assemble pieces ====
         with tf.variable_scope("qa"):
             self.setup_word_embeddings()
@@ -181,7 +203,6 @@ class QASystem(object):
             self.setup_loss()
             self.setup_train_op()
 
-        # ==== set up training/updating procedure ====
         
 
     def setup_train_op(self):
@@ -191,18 +212,29 @@ class QASystem(object):
         with tf.variable_scope("train_step"):
             adam_optimizer = tf.train.AdamOptimizer()
             grads, vars = zip(*adam_optimizer.compute_gradients(self.loss))
-            #clipped_grads, _ = tf.clip_by_global_norm(grads, 4.0)
 
-            self.global_grad = tf.global_norm(grads)
-            self.gradients = zip(grads, vars)
+            clip_val = self.config.max_gradient_norm
+            # if -1 then do not perform gradient clipping
+            if clip_val != -1:
+                clipped_grads, _ = tf.clip_by_global_norm(grads, self.config.max_gradient_norm)
+                self.global_grad = tf.global_norm(clipped_grads)
+                self.gradients = zip(clipped_grads, vars)
+            else:
+                self.global_grad = tf.global_norm(grads)
+                self.gradients = zip(grads, vars)
+
 
             self.train_op = adam_optimizer.apply_gradients(self.gradients)
 
         self.init = tf.global_variables_initializer()
 
 
-    def get_feed_dict(self, questions, contexts, answers):
+    def get_feed_dict(self, questions, contexts, answers, dropout_val):
         """
+        -arg questions: A list of list of ids representing the question sentence
+        -arg contexts: A list of list of ids representing the context paragraph
+        -arg dropout_val: A float representing the keep probability for dropout 
+
         :return: dict {placeholders: value}
         """
 
@@ -216,16 +248,25 @@ class QASystem(object):
             self.question_lengths : question_lengths,
             self.passage_lengths : passage_lengths,
             self.labels : answers
+            self.dropout : dropout_val
         }
 
         return feed
 
 
     def setup_word_embeddings(self):
+        '''
+            Create an embedding matrix (initialised with pretrained glove vectors and updated only if self.config.train_embeddings is true)
+            lookup into this matrix and apply dropout (which is 1 at test time and self.config.dropout at train time)
+        '''
         with tf.variable_scope("vocab_embeddings"):
             _word_embeddings = tf.Variable(self.embeddings, name="_word_embeddings", dtype=tf.float32, trainable= self.config.train_embeddings)
-            self.question = tf.nn.embedding_lookup(_word_embeddings, self.question_ids, name = "question") # (-1, Q, D)
-            self.passage = tf.nn.embedding_lookup(_word_embeddings, self.passage_ids, name = "passage") # (-1, P, D)
+            question_emb = tf.nn.embedding_lookup(_word_embeddings, self.question_ids, name = "question") # (-1, Q, D)
+            passage_emb = tf.nn.embedding_lookup(_word_embeddings, self.passage_ids, name = "passage") # (-1, P, D)
+            # Apply dropout
+            self.question = tf.nn.dropout(question_emb, self.dropout)
+            self.passage  = tf.nn.dropout(passage_emb, self.dropout)
+            
 
 
 
@@ -236,16 +277,16 @@ class QASystem(object):
         self.question_lengths = tf.placeholder(tf.int32, shape=[None], name="question_lengths")
         self.passage_lengths = tf.placeholder(tf.int32, shape = [None], name = "passage_lengths")
 
-        self.labels = tf.placeholder(tf.int32, shape = [None, None], name = "gold_labels")
-
+        self.labels = tf.placeholder(tf.int32, shape = [None, 2], name = "gold_labels")
+        self.dropout = tf.placeholder(tf.float32, shape=[], name = "dropout")
 
     def setup_system(self):
         """
-            DOCUMENTATION TODO
+           Apply the encoder to the question and passage embeddings. Follow that up by Match-LSTM and Answer-Ptr 
         """
         encoder = self.encoder
         decoder = self.decoder
-        encoded_question, q_rep, encoded_passage = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
+        encoded_question, encoded_passage, q_rep, p_rep = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
                                                              encoder_state_input = None)
 
         logits= decoder.decode([encoded_question, encoded_passage], q_rep, [self.question_lengths, self.passage_lengths], self.labels)
@@ -255,11 +296,10 @@ class QASystem(object):
 
     def setup_loss(self):
         """
-        Set up your loss computation here
-        :return:
+        self.logits are the 2 sets of logit (num_classes) values for each example, masked with float(-inf) beyond the true sequence length
+        :return: Loss for the current batch of examples
         """
-
-        
+      
         losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits[0], labels=self.labels[:,0])
         losses += tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits[1], labels=self.labels[:,1])
         self.loss = tf.reduce_mean(losses)
@@ -267,69 +307,61 @@ class QASystem(object):
 
     def test(self, session, valid):
         """
-        in here you should compute a cost for your validation set
-        and tune your hyperparameters according to the validation set performance
-        :return:
+        valid: a list containing q, c and a.
+        :return: loss on the valid dataset and the logit values
         """
         
-        dat = [dat for dat in minibatches(valid, len(valid))]
-        q, c, a = dat[0]
-        input_feed =  self.get_feed_dict(q, c, a)
+        q, c, a = valid
+
+        # at test time we do not perform dropout.
+        input_feed =  self.get_feed_dict(q, c, a, 1.0)
 
         output_feed = [self.logits, self.loss]
 
         outputs, loss = session.run(output_feed, input_feed)
-        print(outputs.shape)
 
-        return outputs[:, 0], outputs[:, 1], loss
+        return outputs[0], outputs[1], loss
 
 
     def answer(self, session, dataset):
 
+        dat = [dat for dat in minibatches(valid, len(valid))]
         yp, yp2, loss = self.test(session, dataset)
 
-        max_ans = -999999
-        a_s, a_e= 0,0
-        for i in xrange(yp.shape[1]):
-            for j in xrange(15):
-                if i+j > yp.shape[1]:
-                    break
 
-                curr_a_s = yp[i];
-                curr_a_e = yp2[i+j]
-                if (curr_a_e+curr_a_s) > max_ans:
-                    max_ans = curr_a_e + curr_a_s
-                    a_s = curr_a_s
-                    a_e = curr_a_e
+        def func(y1, y2):
+            max_ans = -999999
+            a_s, a_e= 0,0
+            num_classes = len(y1)
+            for i in xrange(num_classes):
+                for j in xrange(15):
+                    if i+j >= num_classes:
+                        break
 
-        return (a_s, a_e)
+                    curr_a_s = y1[i];
+                    curr_a_e = y2[i+j]
+                    if (curr_a_e+curr_a_s) > max_ans:
+                        max_ans = curr_a_e + curr_a_s
+                        a_s = i
+                        a_e = j
 
-    def validate(self, sess, valid_dataset):
+            return (a_s, a_e)
+
+
+        a_s, a_e = [], []
+        for i in xrange(yp.shape[0]):
+            _a_s, _a_e = func(yp[i], yp2[i])
+            a_s.append(_a_s)
+            a_e.append(_a_e)
+ 
+
+        return (np.array(a_s), np.array(a_e))
+
+
+    def evaluate_model(self, session, dataset, log=False):
         """
-        Iterate through the validation dataset and determine what
-        the validation cost is.
 
-        This method calls self.test() which explicitly calculates validation cost.
-
-        How you implement this function is dependent on how you design
-        your data iteration function
-
-        :return:
-        """
-
-        _, _, valid_cost = self.test(sess, valid_dataset)
-
-
-        return valid_cost
-
-    def evaluate_answer(self, session, dataset, sample=10, log=False):
-        """
-        Evaluate the model's performance using the harmonic mean of F1 and Exact Match (EM)
-        with the set of true answer labels
-
-        This step actually takes quite some time. So we can only sample 100 examples
-        from either training or testing set.
-
+    
         :param session: session should always be centrally managed in train.py
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
@@ -338,21 +370,10 @@ class QASystem(object):
         :return:
         """
 
-        f1=0
-        dat = []; i =0 
-        for data in dataset:
-            if (i >= sample): 
-                break
-            else:
-                dat.append(data)
-                i += 1
-
         a_s, a_o = self.answer(session, dat)
-
         answers = np.hstack([a_s.reshape([sample, -1]), a_o.reshape([sample,-1])])
         gold_answers = np.array([a for (_,_, a) in dat])
-        print(answers)
-        print(gold_answers) 
+
         em = np.sum(answers == gold_answers)/float(len(answers))
 
         if log:
@@ -361,58 +382,23 @@ class QASystem(object):
         return f1, em
 
 
-    def run_epoch(self, session, train, dev, epoch):
+    def run_epoch(self, session, train):
         """
         Perform one complete pass over the training data and evaluate on dev
         """
-        #f1, em = self.evaluate_answer(session, dev)
-        #print("Exact match on dev set:",em)
-
-        writer = tf.summary.FileWriter("qa_model1")
-        writer.add_graph(session.graph)
+     
         nbatches = (len(train) + self.config.batch_size - 1) / self.config.batch_size
-        #prog = Progbar(target=nbatches)
+        prog = Progbar(target=nbatches)
 
-        grad_graph = ddict(list)
-        train_loss_graph = []
-        global_grad_graph = []
 
         for i, (q_batch, c_batch, a_batch) in enumerate(minibatches(train, self.config.batch_size)):
-            input_feed = self.get_feed_dict(q_batch, c_batch, a_batch)
 
-            #gradients = tf.gradients(self.loss, tf.trainable_variables())
+            # at training time, dropout needs to be on.
+            input_feed = self.get_feed_dict(q_batch, c_batch, a_batch, self.config.dropout_val)
 
-            _, gradients, train_loss, global_grad = session.run([self.train_op, self.gradients, self.loss, self.global_grad], feed_dict=input_feed)
-            print("=======LOSS: ",train_loss, "=============GRAD: ", global_grad, "======")
-        
-            global_grad_graph.append(global_grad)
-            train_loss_graph.append(train_loss)
+            _, train_loss = session.run([self.train_op, self.loss], feed_dict=input_feed)
+            prog.update(i + 1, [("train loss", train_loss)])
 
-            for grad, sym_grad in zip(gradients, self.gradients):
-                var_name = ":".join(sym_grad[1].name.split("/"))
-                grad_graph[var_name].append(np.linalg.norm(grad[0]))
-                f = open("params/%s" %var_name, "w")
-                np.savetxt(f,grad[0])
-                f.close()
-                #print(np.linalg.norm(grad[0]), sym_grad[1].name)
-        
-
-        return grad_graph, train_loss_graph, global_grad_graph        
-
-    def construct_graph(self, grad_graph, train_loss_graph, global_grad_graph, epoch):
-
-        num_figs = len(grad_graph) + 2
-        plt.figure(num_figs*epoch)
-        plt.plot(train_loss_graph)
-        plt.savefig("figs/%s-train_loss_graph.png" %epoch)
-        plt.figure(num_figs*epoch+1)
-        plt.plot(global_grad_graph)
-        plt.savefig("figs/%s-global_grad_graph.png" %epoch)
-
-        for i,key in enumerate(grad_graph):
-            plt.figure(num_figs*epoch + 2+i)
-            plt.plot(grad_graph[key])
-            plt.savefig("figs/%s-%s.png" %(epoch,key))
 
 
 
@@ -420,45 +406,40 @@ class QASystem(object):
         """
         Implement main training loop
 
-        TIPS:
-        You should also implement learning rate annealing (look into tf.train.exponential_decay)
-        Considering the long time to train, you should save your model per epoch.
-
-        More ambitious appoarch can include implement early stopping, or reload
-        previous models if they have higher performance than the current one
-
-        As suggested in the document, you should evaluate your training progress by
-        printing out information every fixed number of iterations.
-
-        We recommend you evaluate your model performance on F1 and EM instead of just
-        looking at the cost.
-
         :param session: it should be passed in from train.py
-        :param dataset: a representation of our data, in some implementations, you can
-                        pass in multiple components (arguments) of one dataset to this function
+        :param dataset: a list containing the training and dev data
         :param train_dir: path to the directory where you should save the model checkpoint
         :return:
         """
 
-        # some free code to print out number of parameters in your model
-        # it's always good to check!
-        # you will also want to save your model parameters in train_dir
-        # so that you can use your trained model to make predictions, or
-        # even continue training
+        # code to print out number of parameters in model (good to know)
 
         train, dev = dataset
-        #session = tf_debug.LocalCLIDebugWrapperSession(session)
         tic = time.time()
         params = tf.trainable_variables()
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         print("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
 
-        train_loss = []
+        session.run(self.init)
+
+        f1, em = self.evaluate_model(session, dev)
+        print("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
+        print("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
+
+        best_f1 = 0
+        best_em = 0
+
         for epoch in xrange(self.config.num_epochs):
             print("*********************EPOCH: %d*********************" %(epoch+1))
-            session.run(self.init)
-            grad_graph, train_loss_graph, global_grad_graph = self.run_epoch(session, train, dev, epoch)
+            self.run_epoch(session, train)
+            f1, em = self.evaluate_model(session, dev)
+            print("#-----------Exact match on dev set: %5.4f #-----------" %em)
+            print("#-----------F1 on dev set: %5.4f #-----------" %f1)
 
-            train_loss += train_loss_graph
-            self.construct_graph( grad_graph, train_loss, global_grad_graph, epoch)
+            #======== Save model if it is the best so far ========
+            if (em > best_em):
+                self.save_model(train_dir)
+                best_em = em
+                best_f1 = f1
+
