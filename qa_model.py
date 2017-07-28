@@ -401,7 +401,7 @@ class QASystem(object):
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
         :param sample: how many examples in dataset we look at
-        :return: f1 and exact match scores
+        :return: exact match scores
         """
 
         a_s, a_o = self.answer(session, dat)
@@ -411,7 +411,7 @@ class QASystem(object):
         em = np.sum(answers == gold_answers)/float(len(answers))
 
 
-        return f1, em
+        return em
 
 
     def run_epoch(self, session, train):
@@ -454,23 +454,21 @@ class QASystem(object):
         self.initialize_model(session, train_dir)
 
 
-        f1, em = self.evaluate_model(session, dev)
+        em = self.evaluate_model(session, dev)
         self.logger.info("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
-        self.logger.info("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
+        #self.logger.info("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
 
-        best_f1 = 0
         best_em = 0
 
         for epoch in xrange(self.config.num_epochs):
             self.logger.info("*********************EPOCH: %d*********************" %(epoch+1))
             self.run_epoch(session, train)
-            f1, em = self.evaluate_model(session, dev)
+            em = self.evaluate_model(session, dev)
             self.logger.info("#-----------Exact match on dev set: %5.4f #-----------" %em)
-            self.logger.info("#-----------F1 on dev set: %5.4f #-----------" %f1)
+            #self.logger.info("#-----------F1 on dev set: %5.4f #-----------" %f1)
 
             #======== Save model if it is the best so far ========
             if (em > best_em):
                 saver.save(sess, "%s/best_model.chk" %train_dir)
                 best_em = em
-                best_f1 = f1
 
