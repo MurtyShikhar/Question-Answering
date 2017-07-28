@@ -42,7 +42,7 @@ def run_func():
     qa = QASystem(encoder, decoder, embeddings, config)
     
     with tf.Session() as sess:
-        qa.train(sess, [train, dev], self.config.train_dir)
+        qa.train(sess, [train, dev], config.train_dir)
 
 
 

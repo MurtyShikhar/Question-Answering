@@ -6,6 +6,7 @@ import time
 import logging
 
 import numpy as np
+import sys
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from general_utils import Progbar
@@ -256,7 +257,7 @@ class QASystem(object):
             self.passage_ids : padded_contexts,
             self.question_lengths : question_lengths,
             self.passage_lengths : passage_lengths,
-            self.labels : answers
+            self.labels : answers,
             self.dropout : dropout_val
         }
 
@@ -404,9 +405,10 @@ class QASystem(object):
         :return: exact match scores
         """
 
-        a_s, a_o = self.answer(session, dat)
+        sample = len(dataset)
+        a_s, a_o = self.answer(session, dataset)
         answers = np.hstack([a_s.reshape([sample, -1]), a_o.reshape([sample,-1])])
-        gold_answers = np.array([a for (_,_, a) in dat])
+        gold_answers = np.array([a for (_,_, a) in dataset])
 
         em = np.sum(answers == gold_answers)/float(len(answers))
 
@@ -453,7 +455,6 @@ class QASystem(object):
         # ====== Load a pretrained model if it exists or create a new one if no pretrained available ======
         self.initialize_model(session, train_dir)
 
-
         em = self.evaluate_model(session, dev)
         self.logger.info("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
         #self.logger.info("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
@@ -469,6 +470,6 @@ class QASystem(object):
 
             #======== Save model if it is the best so far ========
             if (em > best_em):
-                saver.save(sess, "%s/best_model.chk" %train_dir)
+                self.saver.save(session, "%s/best_model.chk" %train_dir)
                 best_em = em
 
