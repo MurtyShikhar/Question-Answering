@@ -14,7 +14,6 @@ from collections import defaultdict as ddict
 
 from attention_wrapper import _maybe_mask_score
 from attention_wrapper import *
-#from tensorflow.contrib.seq2seq import BahdanauAttention, AttentionWrapper
 from evaluate import exact_match_score, f1_score
 from tensorflow.python import debug as tf_debug
 from tensorflow.python.ops import array_ops
@@ -25,9 +24,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-logging.basicConfig(level=logging.INFO)
-
-
+logging.basicConfig(stream = sys.stdout, level=logging.INFO)
 
 # -- A helper function to reverse a tensor along seq_dim
 def _reverse(input_, seq_lengths, seq_dim, batch_dim):
@@ -178,7 +175,7 @@ class Decoder(object):
 
 
 
-class QASystem(object):
+class QASystem(object):    
     def __init__(self, encoder, decoder, pretrained_embeddings, config):
         """
         Initializes your System
@@ -188,6 +185,13 @@ class QASystem(object):
         :param args: pass in more arguments as needed
         """
 
+        # ==== set up logging ======
+
+
+        logger = logging.getLogger("QASystemLogger")
+        self.logger = logger
+
+
         # ==== set up placeholder tokens ========
         self.embeddings = pretrained_embeddings
         self.encoder = encoder
@@ -196,14 +200,19 @@ class QASystem(object):
 
         self.setup_placeholders()
 
+
+
         # ==== assemble pieces ====
         with tf.variable_scope("qa"):
             self.setup_word_embeddings()
             self.setup_system()
             self.setup_loss()
             self.setup_train_op()
+            self.saver = tf.train.Saver()
 
         
+
+
 
     def setup_train_op(self):
         """
@@ -305,6 +314,25 @@ class QASystem(object):
         self.loss = tf.reduce_mean(losses)
 
 
+    def initialize_model(self, session, train_dir):
+        """
+            param: session managed from train.py
+            param: train_dir : the directory in which models are saved
+
+        """
+        ckpt = tf.train.get_checkpoint_state(train_dir, latest_filename ="best_model.chk")
+        v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
+        if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
+            self.logger.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
+            self.saver.restore(session, ckpt.model_checkpoint_path)
+        else:
+            self.logger.info("Created model with fresh parameters.")
+            session.run(self.init)                
+            self.logger.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
+
+
+
+
     def test(self, session, valid):
         """
         valid: a list containing q, c and a.
@@ -324,11 +352,18 @@ class QASystem(object):
 
 
     def answer(self, session, dataset):
+        '''
+            Get the answers for dataset
+        '''
 
-        dat = [dat for dat in minibatches(valid, len(valid))]
-        yp, yp2, loss = self.test(session, dataset)
+        q, c, a = zip(*[[_q, _c, _a] for (_q, _c, _a) in dataset])
+
+        yp, yp2, loss = self.test(session, [q, c, a])
 
 
+    
+        # -- Boundary Model with a max span restriction of 15
+        
         def func(y1, y2):
             max_ans = -999999
             a_s, a_e= 0,0
@@ -358,7 +393,7 @@ class QASystem(object):
         return (np.array(a_s), np.array(a_e))
 
 
-    def evaluate_model(self, session, dataset, log=False):
+    def evaluate_model(self, session, dataset):
         """
 
     
@@ -366,8 +401,7 @@ class QASystem(object):
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
         :param sample: how many examples in dataset we look at
-        :param log: whether we print to std out stream
-        :return:
+        :return: f1 and exact match scores
         """
 
         a_s, a_o = self.answer(session, dat)
@@ -376,8 +410,6 @@ class QASystem(object):
 
         em = np.sum(answers == gold_answers)/float(len(answers))
 
-        if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
 
         return f1, em
 
@@ -412,34 +444,33 @@ class QASystem(object):
         :return:
         """
 
-        # code to print out number of parameters in model (good to know)
+        if not tf.gfile.Exists(train_dir):
+            tf.gfile.MkDir(train_dir)
+
 
         train, dev = dataset
-        tic = time.time()
-        params = tf.trainable_variables()
-        num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
-        toc = time.time()
-        print("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
 
-        session.run(self.init)
+        # ====== Load a pretrained model if it exists or create a new one if no pretrained available ======
+        self.initialize_model(session, train_dir)
+
 
         f1, em = self.evaluate_model(session, dev)
-        print("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
-        print("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
+        self.logger.info("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
+        self.logger.info("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
 
         best_f1 = 0
         best_em = 0
 
         for epoch in xrange(self.config.num_epochs):
-            print("*********************EPOCH: %d*********************" %(epoch+1))
+            self.logger.info("*********************EPOCH: %d*********************" %(epoch+1))
             self.run_epoch(session, train)
             f1, em = self.evaluate_model(session, dev)
-            print("#-----------Exact match on dev set: %5.4f #-----------" %em)
-            print("#-----------F1 on dev set: %5.4f #-----------" %f1)
+            self.logger.info("#-----------Exact match on dev set: %5.4f #-----------" %em)
+            self.logger.info("#-----------F1 on dev set: %5.4f #-----------" %f1)
 
             #======== Save model if it is the best so far ========
             if (em > best_em):
-                self.save_model(train_dir)
+                saver.save(sess, "%s/best_model.chk" %train_dir)
                 best_em = em
                 best_f1 = f1
 

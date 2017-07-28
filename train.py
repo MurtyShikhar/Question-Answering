@@ -1,7 +1,3 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import json
 
@@ -12,19 +8,6 @@ from qa_model import Encoder, QASystem, Decoder, BaselineDecoder
 from config import Config
 from data_utils import *
 from os.path import join as pjoin
-
-
-def initialize_model(session, model, train_dir):
-    ckpt = tf.train.get_checkpoint_state(train_dir)
-    v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
-    if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
-        logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
-        model.saver.restore(session, ckpt.model_checkpoint_path)
-    else:
-        logging.info("Created model with fresh parameters.")
-        session.run(tf.global_variables_initializer())
-        logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
-    return model
 
 
 def initialize_vocab(vocab_path):
@@ -59,7 +42,7 @@ def run_func():
     qa = QASystem(encoder, decoder, embeddings, config)
     
     with tf.Session() as sess:
-        qa.train(sess, [train, dev], "")
+        qa.train(sess, [train, dev], self.config.train_dir)
 
 
 
