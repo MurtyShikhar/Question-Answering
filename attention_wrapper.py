@@ -783,25 +783,6 @@ class AttentionWrapper(rnn_cell_impl.RNNCell):
     cell_inputs = self._cell_input_fn(inputs, context) #concatenate input with alpha*memory and feed into root LSTM
     cell_state = state.cell_state
     cell_output, next_cell_state = self._cell(cell_inputs, cell_state)
-
-    # cell_batch_size = (
-    #     cell_output.shape[0].value or array_ops.shape(cell_output)[0])
-    # error_message = (
-    #     "When applying AttentionWrapper %s: " % self.name +
-    #     "Non-matching batch sizes between the memory "
-    #     "(encoder output) and the query (decoder output).  Are you using "
-    #     "the BeamSearchDecoder?  You may need to tile your memory input via "
-    #     "the tf.contrib.seq2seq.tile_batch function with argument "
-    #     "multiple=beam_width.")
-    # with ops.control_dependencies(
-    #     [check_ops.assert_equal(cell_batch_size,
-    #                             self._attention_mechanism.batch_size,
-    #                             message=error_message)]):
-    #   cell_output = array_ops.identity(
-    #       cell_output, name="checked_cell_output")
-
-
-
  
     if self._attention_layer is not None:
       attention = self._attention_layer(
