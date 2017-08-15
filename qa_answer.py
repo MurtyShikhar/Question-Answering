@@ -8,6 +8,8 @@ import json
 import sys
 import random
 from os.path import join as pjoin
+from config import Config
+
 
 from tqdm import tqdm
 import numpy as np
@@ -18,38 +20,13 @@ from qa_model import Encoder, QASystem, Decoder
 from preprocessing.squad_preprocess import data_from_json, maybe_download, squad_base_url, \
     invert_map, tokenize, token_idx_map
 import qa_data
+from data_utils import *
 
 import logging
-
 logging.basicConfig(level=logging.INFO)
 
-FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_float("learning_rate", 0.001, "Learning rate.")
-tf.app.flags.DEFINE_float("dropout", 0.15, "Fraction of units randomly dropped on non-recurrent connections.")
-tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("epochs", 0, "Number of epochs to train.")
-tf.app.flags.DEFINE_integer("state_size", 200, "Size of each model layer.")
-tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
-tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model.")
-tf.app.flags.DEFINE_integer("keep", 0, "How many checkpoints to keep, 0 indicates keep all.")
-tf.app.flags.DEFINE_string("train_dir", "train", "Training directory (default: ./train).")
-tf.app.flags.DEFINE_string("log_dir", "log", "Path to store log and flag files (default: ./log)")
-tf.app.flags.DEFINE_string("vocab_path", "data/squad/vocab.dat", "Path to vocab file (default: ./data/squad/vocab.dat)")
-tf.app.flags.DEFINE_string("embed_path", "", "Path to the trimmed GLoVe embedding (default: ./data/squad/glove.trimmed.{embedding_size}.npz)")
-tf.app.flags.DEFINE_string("dev_path", "data/squad/dev-v1.1.json", "Path to the JSON dev set to evaluate against (default: ./data/squad/dev-v1.1.json)")
 
-def initialize_model(session, model, train_dir):
-    ckpt = tf.train.get_checkpoint_state(train_dir)
-    v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
-    if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
-        logging.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
-        model.saver.restore(session, ckpt.model_checkpoint_path)
-    else:
-        logging.info("Created model with fresh parameters.")
-        session.run(tf.global_variables_initializer())
-        logging.info('Num params: %d' % sum(v.get_shape().num_elements() for v in tf.trainable_variables()))
-    return model
 
 
 def initialize_vocab(vocab_path):
@@ -100,6 +77,12 @@ def read_dataset(dataset, tier, vocab):
     return context_data, query_data, question_uuid_data
 
 
+
+def prepare_dev2(config):
+    dev = squad_dataset(config.question_dev, config.context_dev, config.answer_dev)
+
+
+
 def prepare_dev(prefix, dev_filename, vocab):
     # Don't check file size, since we could be using other datasets
     dev_dataset = maybe_download(squad_base_url, dev_filename, prefix)
@@ -107,10 +90,17 @@ def prepare_dev(prefix, dev_filename, vocab):
     dev_data = data_from_json(os.path.join(prefix, dev_filename))
     context_data, question_data, question_uuid_data = read_dataset(dev_data, 'dev', vocab)
 
+
+    def normalize(dat):
+        return map(lambda tok: map(int, tok.split()), dat)
+
+    context_data = normalize(context_data)
+    question_data = normalize(question_data)
+
     return context_data, question_data, question_uuid_data
 
 
-def generate_answers(sess, model, dataset, rev_vocab):
+def generate_answers(sess, model, dataset, uuid_data, rev_vocab):
     """
     Loop over the dev or test dataset and generate answer.
 
@@ -131,65 +121,118 @@ def generate_answers(sess, model, dataset, rev_vocab):
     """
     answers = {}
 
-    return answers
+    q,c,a = dataset
+    num_points = len(a)
+    sample_size = 1000
 
 
-def get_normalized_train_dir(train_dir):
-    """
-    Adds symlink to {train_dir} from /tmp/cs224n-squad-train to canonicalize the
-    file paths saved in the checkpoint. This allows the model to be reloaded even
-    if the location of the checkpoint files has moved, allowing usage with CodaLab.
-    This must be done on both train.py and qa_answer.py in order to work.
-    """
-    global_train_dir = '/tmp/cs224n-squad-train'
-    if os.path.exists(global_train_dir):
-        os.unlink(global_train_dir)
-    if not os.path.exists(train_dir):
-        os.makedirs(train_dir)
-    os.symlink(os.path.abspath(train_dir), global_train_dir)
-    return global_train_dir
+    answers_canonical = []
+    num_iters = int((num_points+sample_size-1)/sample_size)
+
+    for i in xrange(num_iters):
+        curr_slice_st = i*sample_size
+        curr_slice_en = min((i+1)*sample_size, num_points)
+
+        slice_sz = curr_slice_en - curr_slice_st 
+
+        q_curr = q[curr_slice_st : curr_slice_en]
+        c_curr = c[curr_slice_st : curr_slice_en]
+        a_curr = a[curr_slice_st : curr_slice_en]
+
+        s, e = model.answer(sess, [q_curr, c_curr, a_curr])
+
+        for j in xrange(slice_sz):
+            st_idx = s[j]
+            en_idx = e[j]
+            curr_context = c[curr_slice_st+j]
+            curr_uuid = uuid_data[curr_slice_st+j]
+
+            curr_ans = ""
+            for idx in xrange(st_idx, en_idx+1):
+                curr_tok = curr_context[idx]
+                curr_ans += " %s" %(rev_vocab[curr_tok])
 
 
-def main(_):
+            answers[curr_uuid] = curr_ans
+            answers_canonical.append((s,e))
 
-    vocab, rev_vocab = initialize_vocab(FLAGS.vocab_path)
 
-    embed_path = FLAGS.embed_path or pjoin("data", "squad", "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
+    return answers, answers_canonical
 
-    if not os.path.exists(FLAGS.log_dir):
-        os.makedirs(FLAGS.log_dir)
-    file_handler = logging.FileHandler(pjoin(FLAGS.log_dir, "log.txt"))
-    logging.getLogger().addHandler(file_handler)
 
-    print(vars(FLAGS))
-    with open(os.path.join(FLAGS.log_dir, "flags.json"), 'w') as fout:
-        json.dump(FLAGS.__flags, fout)
+
+def run_func2(dataset, config):
+    vocab, rev_vocab = initialize_vocab(config.vocab_path)
+
+
+    q, c, a = zip(*[[_q, _c, _a] for (_q, _c, _a) in dataset])
+
+    dataset = [q, c, a]
+
+    embed_path = config.embed_path
+
+    embeddings = get_trimmed_glove_vectors(embed_path)
+
+
+    encoder = Encoder(config.hidden_state_size)
+    decoder = Decoder(config.hidden_state_size)
+
+    qa = QASystem(encoder, decoder, embeddings, config)
+    question_uuid_data = [i for i in xrange(len(a))]
+    
+    with tf.Session() as sess:
+        qa.initialize_model(sess, config.train_dir)
+        answers, answers_canonical = generate_answers(sess, qa, dataset, question_uuid_data, rev_vocab)
+        # write to json file to root dir
+        with io.open('dev-prediction.txt', 'w', encoding='utf-8') as f:
+            for i in xrange(len(a)):
+                curr_ans = unicode(answers[i], "utf-8")
+                f.write("%s\n" %(curr_ans))
+
+        #get_numbers(ans)
+
+
+
+def run_func():
+    config = Config()
 
     # ========= Load Dataset =========
     # You can change this code to load dataset in your own way
+    vocab, rev_vocab = initialize_vocab(config.vocab_path)
 
-    dev_dirname = os.path.dirname(os.path.abspath(FLAGS.dev_path))
-    dev_filename = os.path.basename(FLAGS.dev_path)
+    dev_path = "data/squad/train-v1.1.json"
+    dev_dirname = os.path.dirname(os.path.abspath(dev_path))
+    dev_filename = os.path.basename(dev_path)
     context_data, question_data, question_uuid_data = prepare_dev(dev_dirname, dev_filename, vocab)
-    dataset = (context_data, question_data, question_uuid_data)
 
-    # ========= Model-specific =========
-    # You must change the following code to adjust to your model
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    
+    ques_len = len(question_data)
+    answers = [[0, 0] for _ in xrange(ques_len)]
 
-    qa = QASystem(encoder, decoder)
+    dataset = [question_data, context_data, answers]
 
+    embed_path = config.embed_path
+
+    embeddings = get_trimmed_glove_vectors(embed_path)
+
+
+    encoder = Encoder(config.hidden_state_size)
+    decoder = Decoder(config.hidden_state_size)
+
+    qa = QASystem(encoder, decoder, embeddings, config)
+    
     with tf.Session() as sess:
-        train_dir = get_normalized_train_dir(FLAGS.train_dir)
-        initialize_model(sess, qa, train_dir)
-        answers = generate_answers(sess, qa, dataset, rev_vocab)
-
+        qa.initialize_model(sess, config.train_dir)
+        answers, _ = generate_answers(sess, qa, dataset, question_uuid_data, rev_vocab)
         # write to json file to root dir
         with io.open('dev-prediction.json', 'w', encoding='utf-8') as f:
             f.write(unicode(json.dumps(answers, ensure_ascii=False)))
 
 
+
 if __name__ == "__main__":
-  tf.app.run()
+    #config = Config()
+    #dev = squad_dataset(config.question_dev, config.context_dev, config.answer_dev)
+
+    run_func()

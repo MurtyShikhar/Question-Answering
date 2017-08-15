@@ -79,8 +79,8 @@ if __name__ == '__main__':
     expected_version = '1.1'
     parser = argparse.ArgumentParser(
         description='Evaluation for SQuAD ' + expected_version)
-    parser.add_argument('dataset_file', help='Dataset file')
-    parser.add_argument('prediction_file', help='Prediction File')
+    parser.add_argument('-dataset_file', help='Dataset file')
+    parser.add_argument('-prediction_file', help='Prediction File')
     args = parser.parse_args()
     with open(args.dataset_file) as dataset_file:
         dataset_json = json.load(dataset_file)

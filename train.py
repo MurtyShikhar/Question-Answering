@@ -42,6 +42,8 @@ def run_func():
     qa = QASystem(encoder, decoder, embeddings, config)
     
     with tf.Session() as sess:
+        # ====== Load a pretrained model if it exists or create a new one if no pretrained available ======
+        qa.initialize_model(sess, config.train_dir)
         qa.train(sess, [train, dev], config.train_dir)
 
 

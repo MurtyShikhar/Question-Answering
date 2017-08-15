@@ -68,6 +68,8 @@ class Encoder(object):
             lstm_cell_passage  = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
             encoded_passage, (p_rep, _) =  tf.nn.dynamic_rnn(lstm_cell_passage, passage, masks_passage, dtype=tf.float32) # (-1, P, H)
 
+
+        # outputs beyond sequence lengths are masked with 0s
         return encoded_question, encoded_passage , q_rep, p_rep
 
 
@@ -101,6 +103,33 @@ class Decoder(object):
         self.init_weights = initializer
 
 
+
+    def run_lstm(self, encoded_rep, q_rep, masks):
+        encoded_question, encoded_passage = encoded_rep
+        masks_question, masks_passage = masks
+
+        q_rep = tf.expand_dims(q_rep, 1) # (batch_size, 1, D)
+        encoded_passage_shape = tf.shape(encoded_passage)[1]
+        q_rep = tf.tile(q_rep, [1, encoded_passage_shape, 1])
+
+        mixed_question_passage_rep = tf.concat([encoded_passage, q_rep], axis=-1)
+
+        with tf.variable_scope("lstm_"):
+            cell = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
+            reverse_mixed_question_passage_rep = _reverse(mixed_question_passage_rep, masks_passage, 1, 0)
+
+            output_attender_fw, _ = tf.nn.dynamic_rnn(cell, mixed_question_passage_rep, dtype=tf.float32, scope ="rnn")    
+            output_attender_bw, _ = tf.nn.dynamic_rnn(cell, reverse_mixed_question_passage_rep, dtype=tf.float32, scope = "rnn")
+
+            output_attender_bw = _reverse(output_attender_bw, masks_passage, 1, 0)
+
+            
+        output_attender = tf.concat([output_attender_fw, output_attender_bw], axis = -1) # (-1, P, 2*H)
+        return output_attender
+
+
+
+
     def run_match_lstm(self, encoded_rep, masks):
         encoded_question, encoded_passage = encoded_rep
         masks_question, masks_passage = masks
@@ -111,8 +140,6 @@ class Decoder(object):
 
         # output attention is false because we want to output the cell output and not the attention values
         with tf.variable_scope("match_lstm_attender"):
-            #scope = tf.VariableScope(name = "rnn",  reuse=True)
-
             attention_mechanism_match_lstm = BahdanauAttention(query_depth, encoded_question, memory_sequence_length = masks_question)
             cell = tf.contrib.rnn.BasicLSTMCell(self.hidden_size, state_is_tuple = True)
             lstm_attender  = AttentionWrapper(cell, attention_mechanism_match_lstm, output_attention = False, attention_input_fn = match_lstm_cell_attention_fn)
@@ -148,6 +175,17 @@ class Decoder(object):
             logits, _ = tf.nn.static_rnn(answer_ptr_attender, labels, dtype = tf.float32)
 
         return logits 
+
+
+
+    def decode_lstm(self, encoded_rep, q_rep, masks, labels):
+        """ 
+            Ablation study on match-LSTM (replace match-LSTM with a simple LSTM)
+        """
+        output_lstm = self.run_lstm(encoded_rep, q_rep, masks)
+        logits = self.run_answer_ptr(output_lstm, masks, labels)
+        
+        return logits
 
 
 
@@ -199,8 +237,9 @@ class QASystem(object):
         self.decoder = decoder
         self.config = config
 
-        self.setup_placeholders()
 
+        self.setup_placeholders()
+        
 
 
         # ==== assemble pieces ====
@@ -299,7 +338,13 @@ class QASystem(object):
         encoded_question, encoded_passage, q_rep, p_rep = encoder.encode([self.question, self.passage], [self.question_lengths, self.passage_lengths],
                                                              encoder_state_input = None)
 
-        logits= decoder.decode([encoded_question, encoded_passage], q_rep, [self.question_lengths, self.passage_lengths], self.labels)
+        if self.config.use_match:
+            self.logger.info("\n========Using Match LSTM=========\n")
+            logits= decoder.decode([encoded_question, encoded_passage], q_rep, [self.question_lengths, self.passage_lengths], self.labels)
+        else:
+            self.logger.info("\n========Using Vanilla LSTM=========\n")
+            logits = decoder.decode_lstm([encoded_question, encoded_passage], q_rep, [self.question_lengths, self.passage_lengths], self.labels)
+
 
         self.logits = logits
 
@@ -321,7 +366,7 @@ class QASystem(object):
             param: train_dir : the directory in which models are saved
 
         """
-        ckpt = tf.train.get_checkpoint_state(train_dir, latest_filename ="best_model.chk")
+        ckpt = tf.train.get_checkpoint_state(train_dir)
         v2_path = ckpt.model_checkpoint_path + ".index" if ckpt else ""
         if ckpt and (tf.gfile.Exists(ckpt.model_checkpoint_path) or tf.gfile.Exists(v2_path)):
             self.logger.info("Reading model parameters from %s" % ckpt.model_checkpoint_path)
@@ -345,24 +390,19 @@ class QASystem(object):
         # at test time we do not perform dropout.
         input_feed =  self.get_feed_dict(q, c, a, 1.0)
 
-        output_feed = [self.logits, self.loss]
+        output_feed = [self.logits]
 
-        outputs, loss = session.run(output_feed, input_feed)
+        outputs = session.run(output_feed, input_feed)
 
-        return outputs[0], outputs[1], loss
+        return outputs[0][0], outputs[0][1]
 
 
     def answer(self, session, dataset):
         '''
-            Get the answers for dataset
+            Get the answers for dataset. Independent of how data iteration is implemented
         '''
 
-        q, c, a = zip(*[[_q, _c, _a] for (_q, _c, _a) in dataset])
-
-        yp, yp2, loss = self.test(session, [q, c, a])
-
-
-    
+        yp, yp2 = self.test(session, dataset)
         # -- Boundary Model with a max span restriction of 15
         
         def func(y1, y2):
@@ -379,7 +419,7 @@ class QASystem(object):
                     if (curr_a_e+curr_a_s) > max_ans:
                         max_ans = curr_a_e + curr_a_s
                         a_s = i
-                        a_e = j
+                        a_e = i+j
 
             return (a_s, a_e)
 
@@ -401,19 +441,35 @@ class QASystem(object):
         :param session: session should always be centrally managed in train.py
         :param dataset: a representation of our data, in some implementations, you can
                         pass in multiple components (arguments) of one dataset to this function
-        :param sample: how many examples in dataset we look at
         :return: exact match scores
         """
 
+        q, c, a = zip(*[[_q, _c, _a] for (_q, _c, _a) in dataset])
+
         sample = len(dataset)
-        a_s, a_o = self.answer(session, dataset)
+        a_s, a_o = self.answer(session, [q, c, a])
         answers = np.hstack([a_s.reshape([sample, -1]), a_o.reshape([sample,-1])])
         gold_answers = np.array([a for (_,_, a) in dataset])
 
-        em = np.sum(answers == gold_answers)/float(len(answers))
 
+        em_score = 0
+        em_1 = 0
+        em_2 = 0
+        for i in xrange(sample):
+            gold_s, gold_e = gold_answers[i]
+            s, e = answers[i]
+            if (s==gold_s): em_1 += 1.0
+            if (e==gold_e): em_2 += 1.0
+            if (s == gold_s and e == gold_e):
+                em_score += 1.0
 
-        return em
+        em_1 /= float(len(answers))
+        em_2 /= float(len(answers))
+        self.logger.info("\nExact match on 1st token: %5.4f | Exact match on 2nd token: %5.4f\n" %(em_1, em_2))
+
+        em_score /= float(len(answers))
+
+        return em_score
 
 
     def run_epoch(self, session, train):
@@ -452,20 +508,17 @@ class QASystem(object):
 
         train, dev = dataset
 
-        # ====== Load a pretrained model if it exists or create a new one if no pretrained available ======
-        self.initialize_model(session, train_dir)
-
         em = self.evaluate_model(session, dev)
-        self.logger.info("#-----------Initial Exact match on dev set: %5.4f ---------------#" %em)
+        self.logger.info("\n#-----------Initial Exact match on dev set: %5.4f ---------------#\n" %em)
         #self.logger.info("#-----------Initial F1 on dev set: %5.4f ---------------#" %f1)
 
         best_em = 0
 
         for epoch in xrange(self.config.num_epochs):
-            self.logger.info("*********************EPOCH: %d*********************" %(epoch+1))
+            self.logger.info("\n*********************EPOCH: %d*********************\n" %(epoch+1))
             self.run_epoch(session, train)
             em = self.evaluate_model(session, dev)
-            self.logger.info("#-----------Exact match on dev set: %5.4f #-----------" %em)
+            self.logger.info("\n#-----------Exact match on dev set: %5.4f #-----------\n" %em)
             #self.logger.info("#-----------F1 on dev set: %5.4f #-----------" %f1)
 
             #======== Save model if it is the best so far ========
